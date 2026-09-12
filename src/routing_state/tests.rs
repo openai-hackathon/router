@@ -24,6 +24,7 @@ fn features() -> RequestFeatures {
         fingerprint: Some("f".into()),
         model: Some("local".into()),
         output_limit: Some(10),
+        num_choices: 1,
         fallback_reason: None,
     }
 }
@@ -75,6 +76,8 @@ fn candidate(i: usize, h: usize, n: usize, ect: f64) -> CandidateSnapshot {
         reusable_tokens: h,
         ect_ms: Some(ect),
         cost: None,
+        completion_cost: None,
+        backend_load: None,
         tie_rank: i,
         evidence: PrefixEvidence::Unknown,
     }

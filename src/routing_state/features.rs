@@ -11,6 +11,7 @@ pub struct RequestFeatures {
     pub fingerprint: Option<String>,
     pub model: Option<String>,
     pub output_limit: Option<usize>,
+    pub num_choices: usize,
     pub fallback_reason: Option<&'static str>,
 }
 
@@ -39,6 +40,16 @@ impl RequestFeatures {
                 .iter()
                 .find_map(|key| body.get(key).and_then(Value::as_u64))
                 .and_then(|v| usize::try_from(v).ok()),
+            num_choices: ["n", "best_of"]
+                .iter()
+                .try_fold(1usize, |choices, key| {
+                    let count = match body.get(key).filter(|v| !v.is_null()) {
+                        None => Some(1),
+                        Some(value) => value.as_u64().and_then(|n| usize::try_from(n).ok()),
+                    }?;
+                    (count > 0).then_some(choices.max(count))
+                })
+                .unwrap_or(0),
             fallback_reason: Some("unsupported_request"),
         }
     }

@@ -100,6 +100,198 @@ fn endpoint_scenario() -> (SelectionSnapshot, RequestFeatures, RoutingConfig) {
     (snapshot, features, config)
 }
 
+fn completion_scenario() -> (SelectionSnapshot, RequestFeatures, RoutingConfig) {
+    use vllm_router_rs::routing_state::{backend_load::BackendLoadSnapshot, config::EctModel};
+    let (mut snapshot, features, mut config) = endpoint_scenario();
+    config.ect_model = EctModel::CompletionTime;
+    config.cost_models.clear();
+    config.restore_models.clear();
+    let mut urls = serde_json::Map::new();
+    for worker in &mut snapshot.workers {
+        urls.insert(
+            worker.worker_url.clone(),
+            format!("{}/metrics", worker.worker_url).into(),
+        );
+        worker.backend_load = Some(BackendLoadSnapshot {
+            running: 0,
+            waiting: 0,
+            kv_usage_fraction: Some(0.0),
+            age_ms: 0,
+        });
+        config.completion_models.insert(worker.metadata.as_ref().unwrap().worker_id.clone(),
+            serde_json::from_value(serde_json::json!({
+                "fingerprint":"", "calibration_version":"synthetic-completion-test", "source":"synthetic",
+                "prompt_range":[1,8192], "output_range":[1,512], "concurrency_range":[0,64],
+                "cache_fraction_range":[0.0,1.0], "backend_running_range":[0,64],
+                "backend_waiting_range":[0,64], "output_prior":16,
+                "coefficients": {"intercept_ms":100.0,"prompt_token_ms":1.0,"output_token_ms":1.0,
+                    "prompt_output_token_ms":0.0,"cache_token_ms":0.9,"router_inflight_ms":5.0,
+                    "backend_running_ms":30.0,"backend_waiting_ms":100.0,"kv_usage_ms":5000.0}
+            })).unwrap());
+    }
+    config.backend_metrics = Some(
+        serde_json::from_value(serde_json::json!({
+            "model":"local", "urls":urls, "max_age_ms":1000
+        }))
+        .unwrap(),
+    );
+    snapshot.workers[0].backend_load.as_mut().unwrap().waiting = 40;
+    (snapshot, features, config)
+}
+
+#[test]
+fn completion_model_uses_cpu_prefix_background_work_and_kv_pressure() {
+    let (mut snapshot, features, config) = completion_scenario();
+    // Same original three-worker preferences, now with externally queued work.
+    for (ranking, expected) in RANKINGS.into_iter().zip([0, 2, 1]) {
+        let decision = snapshot.decide(ranking, &features, &config).unwrap();
+        assert_eq!(decision.chosen_worker, expected);
+        assert_eq!(decision.fallback_reason, None);
+        if ranking == Ranking::KvBatchEct {
+            assert!(decision
+                .candidates
+                .iter()
+                .all(|c| c.cost.is_none() && c.completion_cost.is_some()));
+            assert_eq!(decision.ect_model, "completion_time");
+        }
+    }
+    snapshot.workers[0].backend_load.as_mut().unwrap().waiting = 0;
+    let warm = snapshot
+        .decide(Ranking::KvBatchEct, &features, &config)
+        .unwrap();
+    assert_eq!(warm.chosen_worker, 0);
+    // Gauge pressure does not overwrite request-specific CPU prefix evidence.
+    snapshot.workers[0]
+        .backend_load
+        .as_mut()
+        .unwrap()
+        .kv_usage_fraction = Some(1.0);
+    let pressured = snapshot
+        .decide(Ranking::KvBatchEct, &features, &config)
+        .unwrap();
+    assert_eq!(pressured.chosen_worker, 1);
+    assert_eq!(
+        pressured.candidates[0].reusable_tokens,
+        warm.candidates[0].reusable_tokens
+    );
+    // A partial CPU tail gets credit even though native block-normalized H stays fixed.
+    let before = pressured.candidates[0].ect_ms.unwrap();
+    if let PrefixEvidence::LmCacheObserved { cached_tokens, .. } = &mut snapshot.workers[0].evidence
+    {
+        *cached_tokens += 1;
+    }
+    let partial = snapshot
+        .decide(Ranking::KvBatchEct, &features, &config)
+        .unwrap();
+    assert!((before - partial.candidates[0].ect_ms.unwrap() - 0.9).abs() < 1e-8);
+    // Endpoint-specific service capacity can outweigh a cold cache.
+    let mut faster = config;
+    faster
+        .completion_models
+        .get_mut("g2")
+        .unwrap()
+        .coefficients
+        .prompt_token_ms = 0.01;
+    assert_eq!(
+        snapshot
+            .decide(Ranking::KvBatchEct, &features, &faster)
+            .unwrap()
+            .chosen_worker,
+        2
+    );
+}
+
+#[test]
+fn completion_failures_fall_back_together_without_changing_baselines() {
+    let (snapshot, features, config) = completion_scenario();
+    for mode in 0..7 {
+        let (mut snapshot, mut features, mut config) =
+            (snapshot.clone(), features.clone(), config.clone());
+        let reason = match mode {
+            0 => {
+                snapshot.workers[0].backend_load = None;
+                "missing_backend_metrics"
+            }
+            1 => {
+                snapshot.workers[0].backend_load.as_mut().unwrap().age_ms = 1001;
+                "stale_backend_metrics"
+            }
+            2 => {
+                snapshot.workers[0]
+                    .backend_load
+                    .as_mut()
+                    .unwrap()
+                    .kv_usage_fraction = None;
+                "missing_backend_kv_usage"
+            }
+            3 => {
+                config.completion_models.remove("g0");
+                "missing_completion_model"
+            }
+            4 => {
+                config
+                    .completion_models
+                    .get_mut("g0")
+                    .unwrap()
+                    .coefficients
+                    .cache_token_ms = f64::NAN;
+                "invalid_completion_prediction"
+            }
+            5 => {
+                config
+                    .completion_models
+                    .get_mut("g0")
+                    .unwrap()
+                    .coefficients
+                    .cache_token_ms = 1000.0;
+                "invalid_completion_prediction"
+            }
+            _ => {
+                features.num_choices = 2;
+                "unsupported_completion_choices"
+            }
+        };
+        let result = snapshot
+            .decide(Ranking::KvBatchEct, &features, &config)
+            .unwrap();
+        assert_eq!(result.fallback_reason, Some(reason));
+        assert_eq!(result.chosen_worker, 2);
+        assert_eq!(result.candidates.len(), 3);
+        for (ranking, expected) in [(Ranking::PrefixMax, 0), (Ranking::LeastLoadKv, 2)] {
+            let result = snapshot.decide(ranking, &features, &config).unwrap();
+            assert_eq!(result.fallback_reason, None);
+            assert_eq!(result.chosen_worker, expected);
+        }
+    }
+}
+
+#[test]
+fn three_worker_completion_config_is_loadable_and_model_names_are_strict() {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/configs/completion_time_routing.json"
+    );
+    let config = RoutingConfig::load(Some(path)).unwrap();
+    assert_eq!(
+        config.ect_model,
+        vllm_router_rs::routing_state::config::EctModel::CompletionTime
+    );
+    assert_eq!(config.completion_models.len(), 3);
+    assert_eq!(config.backend_metrics.as_ref().unwrap().urls.len(), 3);
+    for model in config.completion_models.values() {
+        assert!(
+            model
+                .estimate("", 1024, 1023, Some(64), 1, 2, 1, Some(0.5))
+                .unwrap()
+                .ect_ms
+                > 0.0
+        );
+    }
+    let mut value = serde_json::to_value(config).unwrap();
+    value["ect_model"] = "completin_time".into();
+    assert!(serde_json::from_value::<RoutingConfig>(value).is_err());
+}
+
 #[test]
 fn endpoint_identity_uses_configured_bindings_without_fabricating_verification() {
     let (snapshot, features, config) = endpoint_scenario();

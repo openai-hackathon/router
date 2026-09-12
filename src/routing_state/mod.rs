@@ -1,5 +1,7 @@
 //! Shared request evidence, compatibility, KV index and session affinity.
 //! DispatchLedger owns the selection/reservation lock for every policy.
+pub mod backend_load;
+pub mod completion;
 pub mod config;
 pub mod cost;
 pub mod features;
@@ -93,6 +95,7 @@ pub struct SharedRoutingState {
     pub config: config::RoutingConfig,
     pub ledger: Arc<DispatchLedger>,
     state: Mutex<State>,
+    backend_load: Mutex<Option<backend_load::BackendLoadCollector>>,
 }
 
 impl SharedRoutingState {
@@ -101,6 +104,16 @@ impl SharedRoutingState {
             config,
             ledger,
             state: Mutex::new(State::default()),
+            backend_load: Mutex::new(None),
+        }
+    }
+
+    pub fn start_backend_metrics(&self, client: reqwest::Client) {
+        if let Some(config) = &self.config.backend_metrics {
+            *self.backend_load.lock() = Some(backend_load::BackendLoadCollector::spawn(
+                client,
+                config.clone(),
+            ));
         }
     }
     fn session_key(&self, features: &RequestFeatures) -> Option<(SessionScope, String)> {
@@ -189,6 +202,11 @@ impl SharedRoutingState {
                     worker_url: worker.url().to_owned(),
                     available: worker.is_available(),
                     inflight: worker.load(),
+                    backend_load: self
+                        .backend_load
+                        .lock()
+                        .as_ref()
+                        .and_then(|collector| collector.snapshot(worker.url())),
                     metadata: telemetry.map(|t| WorkerMetadata {
                         worker_id: t.info.worker_id.clone(),
                         model: t.info.model.clone(),
@@ -219,6 +237,7 @@ impl SharedRoutingState {
         features: &RequestFeatures,
     ) -> Option<usize> {
         self.select_with_observations(workers, ranking, features, None)
+            .map(|(worker, _)| worker)
     }
 
     fn select_with_observations(
@@ -227,7 +246,7 @@ impl SharedRoutingState {
         ranking: Ranking,
         features: &RequestFeatures,
         observations: Option<&lmcache::Observations>,
-    ) -> Option<usize> {
+    ) -> Option<(usize, serde_json::Value)> {
         let mut snapshot = self.snapshot(workers, features);
         if let Some(observations) = observations {
             let state = self.state.lock();
@@ -251,12 +270,53 @@ impl SharedRoutingState {
             }
         }
         let decision = snapshot.decide(ranking, features, &self.config)?;
-        metrics::counter!("router_routing_decisions_total", "policy" => ranking.name(), "fallback" => decision.fallback_reason.unwrap_or("none"), "identity_mode" => decision.identity_mode).increment(1);
+        metrics::counter!("router_routing_decisions_total", "policy" => ranking.name(), "fallback" => decision.fallback_reason.unwrap_or("none"), "identity_mode" => decision.identity_mode, "ect_model" => decision.ect_model).increment(1);
         tracing::info!(request_id = %features.request_id, policy = ranking.name(), fallback_reason = decision.fallback_reason,
             identity_mode = decision.identity_mode,
+            ect_model = decision.ect_model,
             prompt_tokens = features.tokens.as_ref().map(Vec::len), output_limit = features.output_limit,
             candidates = %serde_json::to_string(&decision.candidates).unwrap_or_default(), chosen_worker = workers[decision.chosen_worker].url(), affinity = decision.affinity_applied, "routing decision");
-        Some(decision.chosen_worker)
+        let selected = snapshot
+            .workers
+            .iter()
+            .find(|w| w.worker_index == decision.chosen_worker)?;
+        let candidate = decision
+            .candidates
+            .iter()
+            .find(|c| c.worker_index == decision.chosen_worker)?;
+        let cached_tokens = match candidate.evidence {
+            PrefixEvidence::LmCacheObserved { cached_tokens, .. } => Some(cached_tokens),
+            PrefixEvidence::Observed { tokens, .. } => Some(tokens),
+            _ => None,
+        };
+        let sample = serde_json::json!({
+            "request_id": features.request_id,
+            "worker_id": selected.metadata.as_ref().map(|m| &m.worker_id),
+            "worker_url": selected.worker_url,
+            "fingerprint": features.fingerprint,
+            "source": "measured",
+            "policy": ranking.name(),
+            "model_kind": self.config.ect_model.name(),
+            "identity_mode": decision.identity_mode,
+            "fallback_reason": decision.fallback_reason,
+            "prompt_tokens": features.tokens.as_ref().map(Vec::len),
+            "cached_tokens": cached_tokens,
+            "cache_location": match &candidate.evidence {
+                PrefixEvidence::LmCacheObserved { location, .. } => Some(location.as_str()),
+                PrefixEvidence::Observed { .. } => Some("native_gpu"),
+                _ => None,
+            },
+            "reusable_tokens": candidate.reusable_tokens,
+            "max_output_tokens": features.output_limit,
+            "num_choices": features.num_choices,
+            "inflight": selected.inflight,
+            "backend_running": selected.backend_load.as_ref().map(|l| l.running),
+            "backend_waiting": selected.backend_load.as_ref().map(|l| l.waiting),
+            "kv_usage_fraction": selected.backend_load.as_ref().and_then(|l| l.kv_usage_fraction),
+            "backend_sample_age_ms": selected.backend_load.as_ref().map(|l| l.age_ms),
+            "predicted_completion_ms": candidate.ect_ms,
+        });
+        Some((decision.chosen_worker, sample))
     }
 
     pub fn reserve(
@@ -305,14 +365,21 @@ impl SharedRoutingState {
                 }
             }
         }
+        let mut sample_context = None;
         let mut reservation = self
             .ledger
             .select_and_reserve(workers, policy.clone(), || match policy.ranking() {
                 Some(ranking) => {
-                    self.select_with_observations(workers, ranking, features, observations)
+                    let (worker, sample) =
+                        self.select_with_observations(workers, ranking, features, observations)?;
+                    sample_context = Some(sample);
+                    Some(worker)
                 }
                 None => policy.select_worker_with_headers(workers, text, headers),
             })?;
+        if let Some(sample) = sample_context {
+            reservation.set_sample_context(sample);
+        }
         let epoch = if endpoint_identity {
             None
         } else {

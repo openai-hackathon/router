@@ -1,9 +1,28 @@
 use super::{
+    backend_load::BackendMetricsConfig,
+    completion::CompletionModel,
     cost::{CostModel, RestoreCostModel},
     lmcache::LmCacheConfig,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EctModel {
+    #[default]
+    Decomposed,
+    CompletionTime,
+}
+
+impl EctModel {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Decomposed => "decomposed",
+            Self::CompletionTime => "completion_time",
+        }
+    }
+}
 
 /// All URLs are explicit deployment URLs. Header values come from environment
 /// variables, so the configuration and its Debug output never contain secrets.
@@ -21,6 +40,9 @@ pub struct RoutingConfig {
     pub max_blocks_per_worker: usize,
     pub cost_models: HashMap<String, CostModel>,
     pub restore_models: HashMap<String, RestoreCostModel>,
+    pub ect_model: EctModel,
+    pub completion_models: HashMap<String, CompletionModel>,
+    pub backend_metrics: Option<BackendMetricsConfig>,
     pub lmcache: Option<LmCacheConfig>,
 }
 
@@ -38,6 +60,9 @@ impl Default for RoutingConfig {
             max_blocks_per_worker: 1_000_000,
             cost_models: HashMap::new(),
             restore_models: HashMap::new(),
+            ect_model: EctModel::default(),
+            completion_models: HashMap::new(),
+            backend_metrics: None,
             lmcache: None,
         }
     }
@@ -74,6 +99,16 @@ impl RoutingConfig {
             return Err("routing config limits and intervals must be positive".into());
         }
         config.headers()?;
+        if let Some(backend) = &config.backend_metrics {
+            backend.validate()?;
+            if config
+                .lmcache
+                .as_ref()
+                .is_some_and(|lm| lm.model != backend.model)
+            {
+                return Err("backend metrics model must match the LMCache model".into());
+            }
+        }
         if let Some(lmcache) = &config.lmcache {
             lmcache.validate()?;
             if config.renderer_url.is_some() {

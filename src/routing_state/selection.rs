@@ -1,7 +1,12 @@
 //! Source-independent policy inputs. An adapter supplies observations; selection
 //! performs no tokenization, network access, load mutation, or cache mutation.
 use super::{
-    config::RoutingConfig, cost::CostEstimate, features::RequestFeatures, PrefixEvidence, Ranking,
+    backend_load::BackendLoadSnapshot,
+    completion::CompletionEstimate,
+    config::{EctModel, RoutingConfig},
+    cost::CostEstimate,
+    features::RequestFeatures,
+    PrefixEvidence, Ranking,
 };
 use crate::policies;
 use serde::{Deserialize, Serialize};
@@ -36,6 +41,8 @@ pub struct WorkerSnapshot {
     pub available: bool,
     /// Read immediately before this attempt's reservation, under the ledger lock.
     pub inflight: usize,
+    #[serde(default)]
+    pub backend_load: Option<BackendLoadSnapshot>,
     pub metadata: Option<WorkerMetadata>,
     pub evidence: PrefixEvidence,
 }
@@ -63,6 +70,8 @@ pub struct CandidateSnapshot {
     pub reusable_tokens: usize,
     pub ect_ms: Option<f64>,
     pub cost: Option<CostEstimate>,
+    pub completion_cost: Option<CompletionEstimate>,
+    pub backend_load: Option<BackendLoadSnapshot>,
     pub tie_rank: usize,
     pub evidence: PrefixEvidence,
 }
@@ -70,6 +79,7 @@ pub struct CandidateSnapshot {
 #[derive(Clone, Debug, Serialize)]
 pub struct RoutingDecision {
     pub identity_mode: &'static str,
+    pub ect_model: &'static str,
     pub chosen_worker: usize,
     pub fallback_reason: Option<&'static str>,
     pub affinity_applied: bool,
@@ -213,6 +223,8 @@ impl SelectionSnapshot {
                 reusable_tokens: reusable,
                 ect_ms: None,
                 cost: None,
+                completion_cost: None,
+                backend_load: worker.backend_load.clone(),
                 tie_rank,
                 evidence,
             });
@@ -221,6 +233,69 @@ impl SelectionSnapshot {
         if ranking == Ranking::KvBatchEct && fallback.is_none() {
             for candidate in &mut candidates {
                 let meta = inputs[&candidate.worker_index].metadata.as_ref()?;
+                if config.ect_model == EctModel::CompletionTime {
+                    let prediction = (|| {
+                        if features.num_choices != 1 {
+                            return Err("unsupported_completion_choices");
+                        }
+                        let model = config
+                            .completion_models
+                            .get(&meta.worker_id)
+                            .ok_or("missing_completion_model")?;
+                        // This model is calibrated on controller CPU inventory,
+                        // not a mix of native GPU evidence and CPU placement.
+                        let PrefixEvidence::LmCacheObserved { cached_tokens, .. } =
+                            &candidate.evidence
+                        else {
+                            return Err("unsupported_completion_evidence");
+                        };
+                        let metrics = config
+                            .backend_metrics
+                            .as_ref()
+                            .ok_or("missing_backend_metrics")?;
+                        if metrics.model != meta.model
+                            || !metrics.urls.keys().any(|url| {
+                                url.trim_end_matches('/')
+                                    == inputs[&candidate.worker_index]
+                                        .worker_url
+                                        .trim_end_matches('/')
+                            })
+                        {
+                            return Err("invalid_backend_metrics_binding");
+                        }
+                        let backend = candidate
+                            .backend_load
+                            .as_ref()
+                            .ok_or("missing_backend_metrics")?;
+                        if backend.age_ms > metrics.max_age_ms {
+                            return Err("stale_backend_metrics");
+                        }
+                        model.estimate(
+                            if endpoint_identity {
+                                &model.fingerprint
+                            } else {
+                                &meta.fingerprint
+                            },
+                            features.tokens.as_ref().unwrap().len(),
+                            *cached_tokens,
+                            features.output_limit,
+                            candidate.inflight,
+                            backend.running,
+                            backend.waiting,
+                            backend.kv_usage_fraction,
+                        )
+                    })();
+                    match prediction {
+                        Ok(estimate) => {
+                            candidate.ect_ms = Some(estimate.ect_ms);
+                            candidate.completion_cost = Some(estimate);
+                        }
+                        Err(reason) => {
+                            fallback.get_or_insert(reason);
+                        }
+                    }
+                    continue;
+                }
                 let prediction = config
                     .cost_models
                     .get(&meta.worker_id)
@@ -319,6 +394,7 @@ impl SelectionSnapshot {
         }
         Some(RoutingDecision {
             identity_mode: config.identity_mode_name(),
+            ect_model: config.ect_model.name(),
             chosen_worker: chosen,
             fallback_reason: fallback,
             affinity_applied: affinity,

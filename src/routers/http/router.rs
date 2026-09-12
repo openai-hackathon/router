@@ -169,6 +169,16 @@ impl Router {
             .timeout(Duration::from_millis(routing_config.telemetry_timeout_ms))
             .build()
             .map_err(|e| e.to_string())?;
+        // Separate pool/timeouts from inference and per-request lookup traffic.
+        if let Some(metrics_config) = &routing_config.backend_metrics {
+            let metrics_client = Client::builder()
+                .default_headers(routing_config.headers()?)
+                .redirect(reqwest::redirect::Policy::none())
+                .timeout(Duration::from_millis(metrics_config.timeout_ms))
+                .build()
+                .map_err(|e| e.to_string())?;
+            routing_state.start_backend_metrics(metrics_client);
+        }
         let collectors = if routing_config.lmcache.is_none()
             && (ctx.policy_registry.get_default_policy().ranking().is_some()
                 || ctx.router_config.routing_state_config.is_some())

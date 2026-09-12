@@ -1,0 +1,180 @@
+{
+  "ect_model": "completion_time",
+  "lmcache": {
+    "identity_mode": "endpoint",
+    "renderer_base_url": "https://worker-one.example",
+    "model": "local",
+    "fingerprint": null,
+    "workers": {
+      "https://worker-one.example": {
+        "controller_url": "https://worker-one.example",
+        "instance_id": "worker-one",
+        "block_size": 16,
+        "fingerprint": null
+      },
+      "https://worker-two.example": {
+        "controller_url": "https://worker-two.example",
+        "instance_id": "worker-two",
+        "block_size": 16,
+        "fingerprint": null
+      },
+      "https://worker-three.example": {
+        "controller_url": "https://worker-three.example",
+        "instance_id": "worker-three",
+        "block_size": 16,
+        "fingerprint": null
+      }
+    }
+  },
+  "backend_metrics": {
+    "model": "local",
+    "urls": {
+      "https://worker-one.example": "https://worker-one.example/metrics",
+      "https://worker-two.example": "https://worker-two.example/metrics",
+      "https://worker-three.example": "https://worker-three.example/metrics"
+    },
+    "poll_interval_ms": 1000,
+    "timeout_ms": 2000,
+    "max_age_ms": 5000
+  },
+  "telemetry_timeout_ms": 10000,
+  "render_timeout_ms": 10000,
+  "max_evidence_age_ms": 20000,
+  "completion_models": {
+    "worker-one": {
+      "fingerprint": "",
+      "calibration_version": "synthetic-example-only",
+      "source": "synthetic",
+      "prompt_range": [
+        1,
+        32768
+      ],
+      "output_range": [
+        1,
+        2048
+      ],
+      "concurrency_range": [
+        0,
+        64
+      ],
+      "cache_fraction_range": [
+        0,
+        1
+      ],
+      "backend_running_range": [
+        0,
+        64
+      ],
+      "backend_waiting_range": [
+        0,
+        128
+      ],
+      "kv_usage_range": [
+        0,
+        1
+      ],
+      "output_prior": 128,
+      "coefficients": {
+        "intercept_ms": 500,
+        "prompt_token_ms": 0.5,
+        "output_token_ms": 40,
+        "prompt_output_token_ms": 0,
+        "cache_token_ms": 0.3,
+        "router_inflight_ms": 80,
+        "backend_running_ms": 60,
+        "backend_waiting_ms": 120,
+        "kv_usage_ms": 200
+      }
+    },
+    "worker-two": {
+      "fingerprint": "",
+      "calibration_version": "synthetic-example-only",
+      "source": "synthetic",
+      "prompt_range": [
+        1,
+        32768
+      ],
+      "output_range": [
+        1,
+        2048
+      ],
+      "concurrency_range": [
+        0,
+        64
+      ],
+      "cache_fraction_range": [
+        0,
+        1
+      ],
+      "backend_running_range": [
+        0,
+        64
+      ],
+      "backend_waiting_range": [
+        0,
+        128
+      ],
+      "kv_usage_range": [
+        0,
+        1
+      ],
+      "output_prior": 128,
+      "coefficients": {
+        "intercept_ms": 500,
+        "prompt_token_ms": 0.5,
+        "output_token_ms": 40,
+        "prompt_output_token_ms": 0,
+        "cache_token_ms": 0.3,
+        "router_inflight_ms": 80,
+        "backend_running_ms": 60,
+        "backend_waiting_ms": 120,
+        "kv_usage_ms": 200
+      }
+    },
+    "worker-three": {
+      "fingerprint": "",
+      "calibration_version": "synthetic-example-only",
+      "source": "synthetic",
+      "prompt_range": [
+        1,
+        32768
+      ],
+      "output_range": [
+        1,
+        2048
+      ],
+      "concurrency_range": [
+        0,
+        64
+      ],
+      "cache_fraction_range": [
+        0,
+        1
+      ],
+      "backend_running_range": [
+        0,
+        64
+      ],
+      "backend_waiting_range": [
+        0,
+        128
+      ],
+      "kv_usage_range": [
+        0,
+        1
+      ],
+      "output_prior": 128,
+      "coefficients": {
+        "intercept_ms": 500,
+        "prompt_token_ms": 0.5,
+        "output_token_ms": 40,
+        "prompt_output_token_ms": 0,
+        "cache_token_ms": 0.3,
+        "router_inflight_ms": 80,
+        "backend_running_ms": 60,
+        "backend_waiting_ms": 120,
+        "kv_usage_ms": 200
+      }
+    }
+  }
+}
