@@ -9,6 +9,23 @@ rejects these policies in PD and IGW modes.
 
 ## Develop policies before a telemetry source is ready
 
+Run the smoke suite with Rust/Cargo and `uv` installed:
+
+```sh
+bash scripts/routing/smoke.sh
+```
+
+It builds the real Router, runs the Rust policy acceptance tests, and starts
+local CPU fixtures for all three CLI policies. It verifies initial selection,
+selection while a stream is held open, unchanged request forwarding, in-flight
+retention after HTTP 200 headers, completion/retry cleanup, and common least-load
+fallback when one worker's KV stream loses trust. The suite also runs the bridge
+and calibration tests. No live endpoints, GPU, or Controller are required;
+first use may download build/Python dependencies.
+
+The ECT [calibration guide](ect-calibration.md) describes the timing-sample
+contract, fitting/validation tool and cost breakdown in routing decisions.
+
 `SelectionSnapshot::decide` is the shared, source-independent selection entry
 point. Each worker supplies its index/URL, availability, pre-reservation load,
 serving metadata and `PrefixEvidence`. The decision reports the chosen index,
