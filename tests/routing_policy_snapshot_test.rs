@@ -148,6 +148,39 @@ fn endpoint_identity_uses_configured_bindings_without_fabricating_verification()
 }
 
 #[test]
+fn partial_cpu_prefix_preserves_the_full_restoration_charge_and_range_check() {
+    let (mut snapshot, features, mut config) = endpoint_scenario();
+    if let PrefixEvidence::LmCacheObserved { cached_tokens, .. } = &mut snapshot.workers[0].evidence
+    {
+        *cached_tokens = 6145; // routing prefix remains 6144 complete-block tokens
+    }
+    config.restore_models.get_mut("g0").unwrap().per_token_ms = 1.0;
+    for ranking in RANKINGS {
+        let decision = snapshot.decide(ranking, &features, &config).unwrap();
+        assert_eq!(decision.fallback_reason, None);
+        let candidate = decision
+            .candidates
+            .iter()
+            .find(|c| c.worker_index == 0)
+            .unwrap();
+        assert_eq!(candidate.reusable_tokens, 6144);
+        if ranking == Ranking::KvBatchEct {
+            let cost = candidate.cost.as_ref().unwrap();
+            assert_eq!(cost.restore_ms, 6145.0);
+            assert!((cost.ect_ms - 23953.0).abs() < 1e-8);
+        }
+    }
+    config.restore_models.get_mut("g0").unwrap().token_range = [1, 6144];
+    assert_eq!(
+        snapshot
+            .decide(Ranking::KvBatchEct, &features, &config)
+            .unwrap()
+            .fallback_reason,
+        Some("outside_restore_calibration_range")
+    );
+}
+
+#[test]
 fn endpoint_mode_keeps_evidence_and_cost_fallback_and_bounded_affinity() {
     let (mut snapshot, mut features, mut config) = endpoint_scenario();
     let original = snapshot.workers[2].evidence.clone();

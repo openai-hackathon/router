@@ -246,11 +246,14 @@ async fn observe(
     if location != "LocalCPUBackend" {
         return Err("unsupported_cache_tier");
     }
-    if cached_tokens > tokens.len() || !cached_tokens.is_multiple_of(worker.block_size) {
+    if cached_tokens > tokens.len() {
         return Err("invalid_lookup_prefix");
     }
+    // LMCache's matched prefix can include a partial native block. Preserve
+    // that reported length for restoration accounting; only the prefix used
+    // for routing is rounded down, with the final prompt token excluded.
     let reusable =
-        cached_tokens.min(tokens.len().saturating_sub(1) / worker.block_size * worker.block_size);
+        cached_tokens.min(tokens.len().saturating_sub(1)) / worker.block_size * worker.block_size;
     Ok(Observation {
         metadata: WorkerMetadata {
             worker_id: worker.instance_id.clone(),
@@ -317,9 +320,15 @@ mod tests {
         layout: Value,
         health: Value,
         identity: bool,
-    ) -> (String, tokio::task::JoinHandle<()>) {
+    ) -> (
+        String,
+        tokio::task::JoinHandle<()>,
+        Arc<parking_lot::Mutex<Value>>,
+    ) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
+        let layout = Arc::new(parking_lot::Mutex::new(layout));
+        let current_layout = layout.clone();
         let response = move |body: Value| {
             let mut response = Json(body).into_response();
             if identity {
@@ -337,6 +346,7 @@ mod tests {
                 "/lookup",
                 post(move |Json(body): Json<Value>| async move {
                     assert_eq!(body["tokens"], serde_json::json!([1, 2, 3, 4, 5]));
+                    let layout = current_layout.lock().clone();
                     response(
                         serde_json::json!({"event_id":"operation-not-epoch", "layout_info":layout}),
                     )
@@ -352,26 +362,31 @@ mod tests {
         (
             url,
             tokio::spawn(async move { axum::serve(listener, app).await.unwrap() }),
+            layout,
         )
     }
 
-    async fn observations(layout: Value, health: Value, identity: bool) -> Observation {
-        let (url, task) = controller(layout, health, identity).await;
-        let config = LmCacheConfig {
+    fn config_for(url: &str) -> LmCacheConfig {
+        LmCacheConfig {
             identity_mode: IdentityMode::Verified,
-            renderer_base_url: url.clone(),
+            renderer_base_url: url.to_owned(),
             model: "local".into(),
             fingerprint: Some("fp".into()),
             workers: HashMap::from([(
-                url.clone(),
+                url.to_owned(),
                 LmCacheWorker {
-                    controller_url: url.clone(),
+                    controller_url: url.to_owned(),
                     instance_id: "custom-instance".into(),
                     block_size: 2,
                     fingerprint: Some("fp".into()),
                 },
             )]),
-        };
+        }
+    }
+
+    async fn observations(layout: Value, health: Value, identity: bool) -> Observation {
+        let (url, task, _) = controller(layout, health, identity).await;
+        let config = config_for(&url);
         config.validate().unwrap();
         let workers: Vec<Arc<dyn Worker>> =
             vec![Arc::new(BasicWorker::new(url.clone(), WorkerType::Regular))];
@@ -390,6 +405,37 @@ mod tests {
             evidence: PrefixEvidence::Unknown,
             started: Instant::now(),
         })
+    }
+
+    #[tokio::test]
+    async fn repeated_lookup_preserves_updated_partial_prefix_and_rounds_only_routing_tokens() {
+        let (url, task, layout) =
+            controller(serde_json::json!({}), serde_json::json!({"0": 0}), false).await;
+        let config = config_for(&url);
+        let client = reqwest::Client::new();
+        // Same endpoint and request: no match, partial block, growth, complete
+        // prompt, then eviction. Each observation must reflect the latest value.
+        for (cached, expected) in [(0, 0), (1, 0), (3, 2), (5, 4), (2, 2)] {
+            *layout.lock() = serde_json::json!({"custom-instance": ["LocalCPUBackend", cached]});
+            let observed = observe(
+                &client,
+                &config,
+                config.worker(&url).unwrap(),
+                &[1, 2, 3, 4, 5],
+            )
+            .await
+            .unwrap();
+            assert!(matches!(
+                observed.evidence,
+                PrefixEvidence::LmCacheObserved {
+                    tokens,
+                    cached_tokens,
+                    engine_epoch: None,
+                    ..
+                } if tokens == expected && cached_tokens == cached
+            ));
+        }
+        task.abort();
     }
 
     #[tokio::test]
@@ -443,9 +489,10 @@ mod tests {
         ));
         for layout in [
             serde_json::json!({"custom-instance":["LocalCPUBackend",6]}),
-            serde_json::json!({"custom-instance":["LocalCPUBackend",3]}),
             serde_json::json!({"custom-instance":["unknown-tier",4]}),
             serde_json::json!({"custom-instance":["LocalCPUBackend",-1]}),
+            serde_json::json!({"custom-instance":["LocalCPUBackend",true]}),
+            serde_json::json!({"custom-instance":["LocalCPUBackend",1.5]}),
         ] {
             assert!(matches!(
                 observations(layout, serde_json::json!({"0":0}), true)

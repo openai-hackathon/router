@@ -1,8 +1,8 @@
 """Smoke all policies through the real Router with three local CPU fixtures.
 
 Fixtures cover the native snapshot contract and the observed LMCache lookup /
-health wire shapes. Identity headers on LMCache fixtures are a test extension;
-current live deployments without those headers must fall back.
+health wire shapes, including partial native blocks. Identity headers on LMCache
+fixtures are a test extension; endpoint mode also exercises their absence.
 """
 
 import asyncio
@@ -436,7 +436,9 @@ class FixtureControllerWorker(FixtureWorker):
             self.lookup_calls += 1
             assert (await request.json())["tokens"] == [1, 2, 3, 4, 5]
             layout = (
-                {self.worker_id: ["LocalCPUBackend", len(self.blocks) * 2]}
+                # CPU matches can end inside a native block, including the
+                # complete five-token prompt. All three policies must accept it.
+                {self.worker_id: ["LocalCPUBackend", len(self.blocks) * 2 + 1]}
                 if self.blocks
                 else {}
             )
