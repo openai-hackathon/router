@@ -17,6 +17,7 @@ use crate::routers::{RouterTrait, WorkerManagement};
 use crate::routing_state::{
     config::RoutingConfig,
     features::{self, RequestFeatures},
+    lmcache,
     telemetry::Collectors,
     SharedRoutingState,
 };
@@ -41,12 +42,14 @@ pub struct Router {
     client: Client,
     worker_startup_timeout_secs: u64,
     worker_startup_check_interval_secs: u64,
+    health_endpoint: String,
     intra_node_data_parallel_size: usize,
     api_key: Option<String>,
     retry_config: RetryConfig,
     circuit_breaker_config: CircuitBreakerConfig,
     routing_state: Arc<SharedRoutingState>,
     feature_client: Client,
+    lookup_client: Client,
     _collectors: Option<Collectors>,
 }
 
@@ -67,6 +70,8 @@ impl Router {
                 ctx.router_config.worker_startup_timeout_secs,
                 ctx.router_config.worker_startup_check_interval_secs,
                 Some(ctx.client.clone()),
+                &ctx.router_config.health_check.endpoint,
+                ctx.router_config.health_check.timeout_secs,
             )
             .await?;
         }
@@ -164,13 +169,14 @@ impl Router {
             .timeout(Duration::from_millis(routing_config.telemetry_timeout_ms))
             .build()
             .map_err(|e| e.to_string())?;
-        let collectors = if ctx.policy_registry.get_default_policy().ranking().is_some()
-            || ctx.router_config.routing_state_config.is_some()
+        let collectors = if routing_config.lmcache.is_none()
+            && (ctx.policy_registry.get_default_policy().ranking().is_some()
+                || ctx.router_config.routing_state_config.is_some())
         {
             Some(Collectors::start(
                 ctx.worker_registry.clone(),
                 &routing_state,
-                telemetry_client,
+                telemetry_client.clone(),
             ))
         } else {
             None
@@ -184,12 +190,14 @@ impl Router {
             worker_startup_check_interval_secs: ctx
                 .router_config
                 .worker_startup_check_interval_secs,
+            health_endpoint: ctx.router_config.health_check.endpoint.clone(),
             intra_node_data_parallel_size: ctx.router_config.intra_node_data_parallel_size,
             api_key: ctx.router_config.api_key.clone(),
             retry_config: ctx.router_config.effective_retry_config(),
             circuit_breaker_config: core_cb_config,
             routing_state,
             feature_client,
+            lookup_client: telemetry_client,
             _collectors: collectors,
         })
     }
@@ -225,6 +233,8 @@ impl Router {
             worker_startup_timeout_secs,
             worker_startup_check_interval_secs,
             None,
+            "/health",
+            2,
         )
         .await
     }
@@ -234,6 +244,8 @@ impl Router {
         worker_startup_timeout_secs: u64,
         worker_startup_check_interval_secs: u64,
         client: Option<Client>,
+        health_endpoint: &str,
+        timeout_secs: u64,
     ) -> Result<(), String> {
         // Extract unique base URLs (hosts) for health checks
         // This deduplicates DP-aware URLs like http://host:8081@0, @1, @2, @3
@@ -287,12 +299,12 @@ impl Router {
             for base_url in &unique_hosts_vec {
                 let client_clone = client.clone();
                 let url_clone = base_url.clone();
+                let health_url = format!("{}{}", url_clone.trim_end_matches('/'), health_endpoint);
 
                 let check_health = tokio::spawn(async move {
-                    let health_url = format!("{}/health", url_clone);
                     match client_clone
                         .get(&health_url)
-                        .timeout(Duration::from_secs(2))
+                        .timeout(Duration::from_secs(timeout_secs))
                         .send()
                         .await
                     {
@@ -394,7 +406,11 @@ impl Router {
             worker_url
         };
 
-        let request_builder = self.client.get(format!("{}/health", health_url));
+        let request_builder = self.client.get(format!(
+            "{}{}",
+            health_url.trim_end_matches('/'),
+            self.health_endpoint
+        ));
 
         let response = match request_builder.send().await {
             Ok(res) => {
@@ -530,6 +546,7 @@ impl Router {
         text: Option<&str>,
         headers: Option<&HeaderMap>,
         features: &RequestFeatures,
+        observations: Option<&lmcache::Observations>,
     ) -> Option<Reservation> {
         // Get workers for the specified model (O(1) lookup if model_id is provided)
         let workers = match model_id {
@@ -555,8 +572,14 @@ impl Router {
         // Convert headers for policies that need them (e.g., consistent_hash)
         let request_headers = Self::headers_to_request_headers(headers);
 
-        self.routing_state
-            .reserve(&available, policy, features, text, request_headers.as_ref())
+        self.routing_state.reserve_with_observations(
+            &available,
+            policy,
+            features,
+            text,
+            request_headers.as_ref(),
+            observations,
+        )
     }
 
     #[cfg(test)]
@@ -571,6 +594,7 @@ impl Router {
             text,
             headers,
             &RequestFeatures::unsupported(&serde_json::Value::Null, headers),
+            None,
         )
     }
 
@@ -611,14 +635,18 @@ impl Router {
             |m| self.policy_registry.get_policy_or_default(m),
         );
         let features = if policy.ranking().is_some() {
-            features::build(
-                &self.feature_client,
-                self.routing_state.renderer_url().as_deref(),
-                route,
-                body,
-                headers,
-            )
-            .await
+            if let Some(config) = &self.routing_state.config.lmcache {
+                lmcache::build_features(&self.feature_client, config, route, body, headers).await
+            } else {
+                features::build(
+                    &self.feature_client,
+                    self.routing_state.renderer_url().as_deref(),
+                    route,
+                    body,
+                    headers,
+                )
+                .await
+            }
         } else {
             RequestFeatures::unsupported(body, headers)
         };
@@ -626,18 +654,46 @@ impl Router {
             &self.retry_config,
             // operation per attempt
             |_: u32| async {
-                let reservation =
-                    match self.reserve_for_model(model_id, Some(text), headers, &features) {
-                        Some(w) => w,
-                        None => {
-                            RouterMetrics::record_request_error(route, "no_available_workers");
-                            return (
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "No available workers (all circuits open or unhealthy)",
+                // Controller I/O finishes before selection/reservation. Refresh
+                // on each retry; the selector re-reads current loads and ages.
+                let observations = if policy.ranking().is_some() {
+                    if let Some(config) = &self.routing_state.config.lmcache {
+                        let workers = match model_id {
+                            Some(model) => self.worker_registry.get_by_model_fast(model),
+                            None => self.worker_registry.get_all(),
+                        };
+                        Some(
+                            lmcache::lookup_workers(
+                                &self.lookup_client,
+                                config,
+                                &workers,
+                                &features,
                             )
-                                .into_response();
-                        }
-                    };
+                            .await,
+                        )
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                let reservation = match self.reserve_for_model(
+                    model_id,
+                    Some(text),
+                    headers,
+                    &features,
+                    observations.as_ref(),
+                ) {
+                    Some(w) => w,
+                    None => {
+                        RouterMetrics::record_request_error(route, "no_available_workers");
+                        return (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "No available workers (all circuits open or unhealthy)",
+                        )
+                            .into_response();
+                    }
+                };
 
                 let worker = reservation.worker.clone();
                 let response = self
@@ -931,7 +987,15 @@ impl Router {
                 ));
             }
 
-            match client.get(format!("{}/health", worker_url)).send().await {
+            match client
+                .get(format!(
+                    "{}{}",
+                    worker_url.trim_end_matches('/'),
+                    self.health_endpoint
+                ))
+                .send()
+                .await
+            {
                 Ok(res) => {
                     if res.status().is_success() {
                         if self.intra_node_data_parallel_size > 1 {
@@ -1601,6 +1665,7 @@ mod tests {
             policy_registry,
             worker_startup_timeout_secs: 5,
             worker_startup_check_interval_secs: 1,
+            health_endpoint: "/health".into(),
             intra_node_data_parallel_size: 1,
             api_key: None,
             client: Client::new(),
@@ -1611,6 +1676,7 @@ mod tests {
                 Arc::new(DispatchLedger::default()),
             )),
             feature_client: Client::new(),
+            lookup_client: Client::new(),
             _collectors: None,
         }
     }
@@ -1730,6 +1796,7 @@ mod tests {
             policy_registry,
             worker_startup_timeout_secs: 5,
             worker_startup_check_interval_secs: 1,
+            health_endpoint: "/health".into(),
             intra_node_data_parallel_size: 1,
             api_key: None,
             client: Client::new(),
@@ -1740,6 +1807,7 @@ mod tests {
                 Arc::new(DispatchLedger::default()),
             )),
             feature_client: Client::new(),
+            lookup_client: Client::new(),
             _collectors: None,
         }
     }

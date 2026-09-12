@@ -1,7 +1,8 @@
 """Smoke all policies through the real Router with three local CPU fixtures.
 
-The fixtures supply the existing routing snapshot contract. They do not claim
-to implement or validate a real Controller's wire protocol.
+Fixtures cover the native snapshot contract and the observed LMCache lookup /
+health wire shapes. Identity headers on LMCache fixtures are a test extension;
+current live deployments without those headers must fall back.
 """
 
 import asyncio
@@ -136,8 +137,10 @@ def metric(text, name, **labels):
 
 
 class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
+    worker_factory = FixtureWorker
+
     async def asyncSetUp(self):
-        self.nodes = [FixtureWorker(i) for i in range(3)]
+        self.nodes = [self.worker_factory(i) for i in range(3)]
         self.servers, self.tasks, self.urls = [], [], []
         for node in self.nodes:
             http_port = port()
@@ -173,39 +176,63 @@ class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.05)
         self.fail("smoke condition did not become true within 5 seconds")
 
-    async def exercise(self, policy, first_worker, while_held):
+    async def exercise(self, policy, first_worker, while_held, source="native"):
         binary = Path(__file__).resolve().parents[2] / "target/debug/vllm-router"
         self.assertTrue(binary.exists(), "run cargo build --bin vllm-router first")
         for url in self.urls:
 
             async def healthy(url=url):
-                return (await self.client.get(url + "/health")).status_code == 200
+                path = "/v1/models" if source == "lmcache" else "/health"
+                return (await self.client.get(url + path)).status_code == 200
 
             await self.wait_for(healthy)
         with tempfile.TemporaryDirectory() as directory:
             config_path = Path(directory) / "config.json"
-            config_path.write_text(
-                json.dumps(
-                    {
-                        "poll_interval_ms": 50,
-                        "cost_models": {
-                            f"g{i}": {
-                                "fingerprint": "smoke-fixture",
-                                "calibration_version": "synthetic-smoke-only",
-                                "prompt_range": [1, 4096],
-                                "output_range": [1, 16],
-                                "concurrency_range": [0, 50],
-                                "output_prior": 4,
-                                "prefill": [0, 1, 0],
-                                "decode": [score, 0, 0],
-                                "beta": 1,
-                                "queue_ms": 0,
-                            }
-                            for i, score in enumerate([100, 80, 120])
-                        },
+            config = {
+                "poll_interval_ms": 50,
+                "cost_models": {
+                    f"g{i}": {
+                        "fingerprint": "smoke-fixture",
+                        "calibration_version": "synthetic-smoke-only",
+                        "prompt_range": [1, 4096],
+                        "output_range": [1, 16],
+                        "concurrency_range": [0, 50],
+                        "output_prior": 4,
+                        "prefill": [0, 1, 0],
+                        "decode": [score, 0, 0],
+                        "beta": 1,
+                        "queue_ms": 0,
                     }
-                )
-            )
+                    for i, score in enumerate([100, 80, 120])
+                },
+            }
+            if source == "lmcache":
+                config["lmcache"] = {
+                    "renderer_base_url": self.urls[0],
+                    "model": "local",
+                    "fingerprint": "smoke-fixture",
+                    "workers": {
+                        url: {
+                            "controller_url": url,
+                            "instance_id": f"g{i}",
+                            "block_size": 2,
+                            "fingerprint": "smoke-fixture",
+                        }
+                        for i, url in enumerate(self.urls)
+                    },
+                }
+                config["restore_models"] = {
+                    f"g{i}": {
+                        "fingerprint": "smoke-fixture",
+                        "calibration_version": "synthetic-restore-test-only",
+                        "location": "LocalCPUBackend",
+                        "token_range": [1, 4096],
+                        "fixed_ms": 3,
+                        "per_token_ms": 0,
+                    }
+                    for i in range(3)
+                }
+            config_path.write_text(json.dumps(config))
             router_port, metrics_port = port(), port()
             base = f"http://127.0.0.1:{router_port}"
             metrics_url = f"http://127.0.0.1:{metrics_port}/metrics"
@@ -224,6 +251,8 @@ class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
                     str(metrics_port),
                     "--worker-startup-check-interval",
                     "1",
+                    "--health-check-endpoint",
+                    "/v1/models" if source == "lmcache" else "/health",
                     "--worker-startup-timeout-secs",
                     "10",
                     "--retry-max-retries",
@@ -236,6 +265,8 @@ class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
                     async def ready():
                         if (await self.client.get(base + "/health")).status_code != 200:
                             return False
+                        if source == "lmcache":
+                            return True
                         text = (await self.client.get(metrics_url)).text
                         samples = [
                             s
@@ -311,7 +342,8 @@ class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
                             > previous_errors
                         )
 
-                    await self.wait_for(invalidated)
+                    if source == "native":
+                        await self.wait_for(invalidated)
                     response = await self.client.post(
                         base + "/v1/chat/completions", json=body
                     )
@@ -324,11 +356,16 @@ class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
                             text,
                             "router_routing_decisions_total",
                             policy=policy,
-                            fallback="stale_kv",
+                            fallback="stale_kv" if source == "native" else "unknown_kv",
                         ),
                         0,
                     )
                     self.assertEqual(metric(text, "vllm_router_running_requests"), 0)
+                    if source == "lmcache":
+                        for node in self.nodes:
+                            self.assertEqual(node.native_calls, 0)
+                            self.assertEqual(node.lookup_calls, 5)
+                            self.assertEqual(node.health_calls, 5)
                 except BaseException:
                     log.seek(0)
                     print(log.read())
@@ -348,6 +385,72 @@ class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_kv_batch_ect(self):
         await self.exercise("kv_batch_ect", 1, 0)
+
+
+class FixtureControllerWorker(FixtureWorker):
+    def __init__(self, index):
+        super().__init__(index)
+        self.native_calls = self.lookup_calls = self.health_calls = 0
+        self.identity = True
+        app = self.app
+
+        @app.middleware("http")
+        async def count_native(request, call_next):
+            if request.url.path == "/health" and request.method == "GET":
+                return JSONResponse({"detail": "Method Not Allowed"}, status_code=405)
+            if request.url.path.startswith("/routing/"):
+                self.native_calls += 1
+            return await call_next(request)
+
+        @app.get("/v1/models")
+        async def models():
+            return {"data": [{"id": "local"}]}
+
+        def headers():
+            return (
+                {
+                    "x-routing-worker-id": self.worker_id,
+                    "x-routing-engine-epoch": self.epoch,
+                }
+                if self.identity
+                else {}
+            )
+
+        @app.post("/v1/chat/completions/render")
+        async def render():
+            return {"token_ids": [1, 2, 3, 4, 5]}
+
+        @app.post("/lookup")
+        async def lookup(request: Request):
+            self.lookup_calls += 1
+            assert (await request.json())["tokens"] == [1, 2, 3, 4, 5]
+            layout = (
+                {self.worker_id: ["LocalCPUBackend", len(self.blocks) * 2]}
+                if self.blocks
+                else {}
+            )
+            return JSONResponse(
+                {"event_id": "lookup-op", "layout_info": layout}, headers=headers()
+            )
+
+        @app.post("/health")
+        async def health(request: Request):
+            self.health_calls += 1
+            assert (await request.json())["instance_id"] == self.worker_id
+            return JSONResponse(
+                {
+                    "event_id": "health-op",
+                    "error_codes": {"0": 0 if self.synced else 1},
+                },
+                headers=headers(),
+            )
+
+
+class LmCachePolicySmokeTest(PolicySmokeTest):
+    worker_factory = FixtureControllerWorker
+
+    async def exercise(self, policy, first_worker, while_held, source="lmcache"):
+        await super().exercise(policy, first_worker, while_held, source)
 
 
 if __name__ == "__main__":
