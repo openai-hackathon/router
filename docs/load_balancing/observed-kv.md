@@ -7,6 +7,56 @@ scheduler. Initial support is one identifiable DP engine and one full-attention
 GPU cache group per URL, with text-only Chat/Completions requests. CLI validation
 rejects these policies in PD and IGW modes.
 
+## Develop policies before a telemetry source is ready
+
+`SelectionSnapshot::decide` is the shared, source-independent selection entry
+point. Each worker supplies its index/URL, availability, pre-reservation load,
+serving metadata and `PrefixEvidence`. The decision reports the chosen index,
+fallback reason, affinity decision and candidate scores. The three ranking
+functions consume the same candidates. This function performs no network I/O,
+tokenization, cache updates or load mutation.
+
+The regular HTTP Router now builds this snapshot from its existing local state
+inside the ledger's selection/reservation critical section. A future controller
+adapter can supply observations in the same shape. It must refresh evidence age
+and read current loads before every reservation, including retries. A saved
+snapshot is an offline test input, not a live cache or load source.
+
+Run the complete synthetic scenario without a controller or GPU:
+
+```sh
+cargo run --example routing_policy_demo
+cargo test --test routing_policy_snapshot_test
+```
+
+The example reads `tests/fixtures/routing_policy_scenario.json` and prints a JSON
+decision report. Its placeholder tokens, cache observations and coefficients
+are **synthetic test data**, not measurements or a renderer implementation.
+
+| Worker | Prefix tokens | In-flight before dispatch | Calculated ECT |
+| --- | ---: | ---: | ---: |
+| G0 | 6144 | 6 | 3060 ms |
+| G1 | 4096 | 3 | 2860 ms |
+| G2 | 0 | 1 | 3500 ms |
+
+For a prompt length of 8192, Prefix Max selects G0, Least Load KV selects G2,
+and KV Batch ECT selects G1. The tests compute these costs through the shared
+cost model; they do not inject already-computed ECT scores into the selectors.
+They also cover baseline priority, deterministic ties, complete fallback,
+compatibility/health filtering, invalid observations/costs, affinity boundaries,
+and concurrent reservations for all three policies.
+
+Affinity uses the equivalent expression `E_best + 0.015 * E_best + 10 ms` to
+avoid losing the exact boundary through floating-point multiplication by 1.015.
+For example, a home at 2040 ms is allowed when the best is 2000 ms; 2040.001 ms
+is rejected, assuming the prefix/epoch/session conditions also pass.
+
+No LMCache HTTP adapter or fictional Controller endpoint is added by this
+offline path. The current `Observed` prefix contract represents GPU-reusable
+full blocks. A future LMCache adapter must preserve cache tier, establish
+identity/freshness and account for restoration costs before CPU or remote
+matches can participate in ECT as valid cache evidence.
+
 ## What the live deployment provides, and what ECT still needs
 
 Probed on 2026-09-12, using the URLs supplied in the conversation:
@@ -15,16 +65,18 @@ Probed on 2026-09-12, using the URLs supplied in the conversation:
 | --- | --- | --- | --- | --- |
 | a | `https://s9930703--vllm-serve-serve.modal.run` | 200, 1.76 s | 1.28–1.31 s | Qwen/Qwen3-0.6B |
 | b | `https://s9930703--vllm-serve-b-serve.modal.run` | 200, 4.16 s | 1.64–1.82 s | Qwen/Qwen3-0.6B |
+| c | `https://s9930703--vllm-serve-c-serve.modal.run` | 200 | 1.02 s plain / 1.24 s tool history | Qwen/Qwen3-0.6B |
 
-These are individual small requests, **not a latency benchmark**. Both report
-vLLM 0.29.0. The supplied `a` URL repeats the original URL; only two distinct URLs
-were available for this verification. The third URL and actual singleton Modal
-configuration have not been verified. Different URLs alone do not establish
-engine identity or replica count.
+These are individual small requests, **not a latency benchmark**. All three
+report vLLM 0.29.0. The supplied `a` URL repeats the original URL; `c` was supplied
+and tested later. All three distinct URLs served inference successfully. Actual
+singleton Modal configuration has not been verified; different URLs alone do
+not establish engine identity or replica count. On c, the model context limit
+is 4096 and the sampled running/waiting counts were both zero.
 
 | Input | What we obtained | Remaining work |
 | --- | --- | --- |
-| Prompt tokens, `L` | `/v1/chat/completions/render`; exact parity with inference `return_token_ids` on both URLs: 17 tokens for plain chat, 193 for tool history | Expand golden cases for production traffic; implement and verify a Responses adapter |
+| Prompt tokens, `L` | `/v1/chat/completions/render`; exact parity with inference `return_token_ids` on a, b and c: 17 tokens for plain chat, 193 for tool history | Expand golden cases for production traffic; implement and verify a Responses adapter |
 | Request-specific reusable prefix, `H_j` | Not available through the public interfaces checked | Collect `BlockStored`, `BlockRemoved`, `AllBlocksCleared`, including parent hashes, token IDs, block size, group and extra keys |
 | Event integrity | No HTTP event/snapshot API in deployment OpenAPI | Supply sequence/replay and a complete snapshot or a known-empty engine origin; fail closed on gaps |
 | Worker identity | Metrics label `engine="0"` | A stable worker ID plus restart epoch; bind telemetry and inference to the same supervised engine |
@@ -51,7 +103,8 @@ Reproduce the probes (two short inference calls per URL with `--token-parity`):
 ```sh
 python scripts/routing/probe.py --token-parity \
   --url https://s9930703--vllm-serve-serve.modal.run \
-  --url https://s9930703--vllm-serve-b-serve.modal.run
+  --url https://s9930703--vllm-serve-b-serve.modal.run \
+  --url https://s9930703--vllm-serve-c-serve.modal.run
 ```
 
 ## Ranking and fallback
@@ -315,24 +368,25 @@ Sources:
 
 ## LMCache controller availability probe
 
-On 2026-09-12 (report completed at 03:23 UTC), both supplied URLs returned:
+On 2026-09-12, a/b were checked at 03:23 UTC and c at 03:33 UTC:
 
-| Request | a | b |
-| --- | --- | --- |
-| `GET /openapi.json` | 200, vLLM inference API | 200, vLLM inference API |
-| `GET /metrics` | 200, no LMCache-named metric samples | 200, no LMCache-named metric samples |
-| `POST /lookup` using synthetic rendered tokens | 404 | 404 |
-| `GET /controller/workers` | 404 | 404 |
-| `GET /controller/key-stats` | 404 | 404 |
-| `GET /lookup/info` | 404 | 404 |
-| `GET /instances` (MP coordinator) | 404 | 404 |
-| `POST /directory/lookup` (MP coordinator) | 404 | 404 |
+| Request | a | b | c |
+| --- | --- | --- | --- |
+| `GET /openapi.json` | 200, vLLM inference API | 200, vLLM inference API | 200, vLLM inference API |
+| `GET /metrics` | 200, no LMCache-named metric samples | 200, no LMCache-named metric samples | 200, no LMCache-named metric samples |
+| `POST /lookup` using synthetic rendered tokens | 404 | 404 | 404 |
+| `GET /controller/workers` | 404 | 404 | 404 |
+| `GET /controller/key-stats` | 404 | 404 | 404 |
+| `GET /lookup/info` | 404 | 404 | 404 |
+| `GET /instances` (MP coordinator) | 404 | 404 | 404 |
+| `POST /directory/lookup` (MP coordinator) | 404 | 404 | 404 |
 
-These results establish that the two tested HTTPS base URLs did not expose the
+These results establish that the three tested HTTPS base URLs did not expose the
 queried controller interfaces at that time. They do **not** establish that no
-controller or LMCache worker exists elsewhere. The deployment owner is bringing
-up a cache controller; its actual URL, API version and worker registrations are
-still needed. No LMCache data source has been enabled or validated in the Router.
+controller or LMCache worker exists elsewhere. The deployment owner reported
+that c has LMCache; that does not by itself expose Controller lookup on the same
+URL. Its actual Controller URL, API version and worker registrations are still
+needed. No LMCache data source has been enabled or validated in the Router.
 
 Repeat the read-only test against its explicit URL:
 
@@ -359,3 +413,34 @@ Contracts:
 [controller lookup](https://docs.lmcache.ai/kv_cache_management/lookup.html),
 [controller workers and key statistics](https://docs.lmcache.ai/internal_api_server/controller_apis.html),
 [MP coordinator APIs](https://docs.lmcache.ai/mp/coordinator.html).
+
+### Distinguish inference, internal APIs and the Controller
+
+The same c URL was rechecked after the operator supplied it again:
+`POST /lookup` returned `404 {"detail":"Not Found"}`, while `POST /health`
+returned `405 {"detail":"Method Not Allowed"}`. Its OpenAPI advertises only
+`GET /health` and the existing vLLM routes. This is evidence about that public
+HTTP entry point, not about which packages or localhost services are installed
+inside the container. An internal listener on port 6999 is a separate service
+unless the exposed HTTP application forwards requests to it.
+
+The official in-process Controller documentation describes `/controller/key-stats`
+as statistics over all instances in that Controller's registry, and
+`/controller/workers` without filters as all registered workers. These paths are
+not intrinsically limited to one instance; scope depends on the attached
+Controller and its registrations. A server without a Controller manager may
+return 503. Check the actual component/API version and returned instance IDs.
+
+The proposed hot-context migration demo requires a working Controller and
+compatible source/destination LMCache instances with reachable P2P transport.
+Warm a known context on a, observe its placement through lookup, issue a
+separate move operation, wait for completion, then verify c's placement and
+measure the next inference. A Controller accepting the operation is not proof
+of completion. The documented example moves CPU cache to CPU cache using NIXL;
+it does not demonstrate immediate GPU residency. No migration, clear, pin or
+compression request was executed during these probes. Migration control is a
+future demo step; the three routing policies continue to consume observations.
+
+Sources:
+[Controller API scope](https://docs.lmcache.ai/internal_api_server/controller_apis.html),
+[move contract and P2P example](https://docs.lmcache.ai/kv_cache_management/move.html).
