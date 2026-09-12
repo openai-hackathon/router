@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Read-only LMCache discovery on explicitly supplied HTTP base URLs.
+"""Read-only LMCache lookup on explicitly supplied HTTP base URLs.
 
-Uses documented controller APIs, with synthetic tokens for lookups. Does not
-probe other hosts/ports, modify deployments, or print cached prompt/token data.
+Queries only POST /lookup on the controller, using the vLLM renderer for
+synthetic tokens when available. Does not enumerate APIs, modify deployments,
+or print cached prompt/token data. An empty result cannot prove cache absence.
 """
 
 import argparse
@@ -15,8 +16,9 @@ import urllib.error
 import urllib.request
 
 
-def request(url, timeout, body=None):
+def request(url, timeout, body=None, *, include_identity=False):
     started = time.monotonic()
+    identity = {}
     req = urllib.request.Request(
         url,
         data=None if body is None else json.dumps(body).encode(),
@@ -25,6 +27,12 @@ def request(url, timeout, body=None):
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             status, raw = response.status, response.read(1_048_576)
+            if include_identity:
+                identity = {
+                    name: response.headers[name]
+                    for name in ("x-routing-worker-id", "x-routing-engine-epoch")
+                    if name in response.headers
+                }
     except urllib.error.HTTPError as error:
         status, raw = error.code, error.read(4096)
     except (urllib.error.URLError, TimeoutError) as error:
@@ -37,43 +45,18 @@ def request(url, timeout, body=None):
         "status": status,
         "seconds": round(time.monotonic() - started, 3),
         "data": data,
+        **({"identity_headers": identity} if include_identity else {}),
     }
 
 
-def summarize(path, result):
+def summarize(result):
     data = result.pop("data", None)
     if result["status"] != 200:
         if isinstance(data, dict) and isinstance(data.get("detail"), str):
             result["detail"] = data["detail"][:160]
         return result
-    if path == "/openapi.json" and isinstance(data, dict):
-        result["paths"] = sorted(data.get("paths", {}))
-    elif path == "/metrics" and isinstance(data, str):
-        result["lmcache_metric_names"] = sorted(
-            {
-                line.split("{")[0].split(" ")[0]
-                for line in data.splitlines()
-                if not line.startswith("#") and "lmcache" in line.lower()
-            }
-        )
-    elif path == "/lookup" and isinstance(data, dict):
+    if isinstance(data, dict):
         result["layout_info"] = data.get("layout_info")
-    elif path == "/directory/lookup" and isinstance(data, dict):
-        # Keep the wire schema for discovery, not token content or cache keys.
-        result["response_fields"] = sorted(data)
-    elif path == "/controller/key-stats" and isinstance(data, dict):
-        result["counts"] = {
-            name: data.get(name)
-            for name in (
-                "total_key_count",
-                "total_instance_count",
-                "total_worker_count",
-            )
-        }
-    elif path in ("/controller/workers", "/instances"):
-        result["registration"] = data
-    elif isinstance(data, dict):
-        result["response_fields"] = sorted(data)
     return result
 
 
@@ -84,7 +67,7 @@ def probe(url, timeout, model):
         url + "/v1/chat/completions/render",
         timeout,
         {
-            "model": "local",
+            "model": model,
             "messages": [{"role": "user", "content": "LMCache routing probe."}],
             "chat_template_kwargs": {"enable_thinking": False},
             "max_tokens": 1,
@@ -98,38 +81,13 @@ def probe(url, timeout, model):
     # A controller-only URL can still be tested for API availability. One
     # synthetic token cannot establish that cache contents are absent.
     lookup_tokens = tokens if tokens is not None else [1]
-    calls = [
-        ("/openapi.json", None),
-        ("/metrics", None),
-        ("/controller/workers", None),
-        ("/controller/key-stats", None),
-        ("/lookup/info", None),
-        ("/lookup", {"tokens": lookup_tokens}),
-        ("/instances", None),
-        (
-            "/directory/lookup",
-            {
-                "token_ids": lookup_tokens,
-                "model_name": model,
-                "world_size": 1,
-                "cache_salt": "",
-            },
-        ),
-    ]
-    endpoints = {}
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        pending = {
-            path: executor.submit(request, url + path, timeout, body)
-            for path, body in calls
-        }
-        for path, future in pending.items():
-            endpoints[path] = summarize(path, future.result())
+    lookup = request(url + "/lookup", timeout, {"tokens": lookup_tokens})
     return {
         "url": url,
         "render_status": rendered["status"],
         "synthetic_token_count": len(lookup_tokens),
         "tokens_from_renderer": tokens is not None,
-        "endpoints": endpoints,
+        "endpoints": {"/lookup": summarize(lookup)},
     }
 
 
@@ -137,7 +95,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", action="append", required=True)
     parser.add_argument("--timeout", type=float, default=180)
-    parser.add_argument("--model", default="Qwen/Qwen3-0.6B")
+    parser.add_argument("--model", default="local", help="Served renderer model name")
     parser.add_argument("--output")
     args = parser.parse_args()
     with ThreadPoolExecutor(max_workers=3) as executor:
