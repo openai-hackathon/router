@@ -94,9 +94,9 @@ is 4096 and the sampled running/waiting counts were both zero.
 | Input | What we obtained | Remaining work |
 | --- | --- | --- |
 | Prompt tokens, `L` | `/v1/chat/completions/render`; exact parity with inference `return_token_ids` on a, b and c: 17 tokens for plain chat, 193 for tool history | Expand golden cases for production traffic; implement and verify a Responses adapter |
-| Request-specific reusable prefix, `H_j` | Not available through the public interfaces checked | Collect `BlockStored`, `BlockRemoved`, `AllBlocksCleared`, including parent hashes, token IDs, block size, group and extra keys |
-| Event integrity | No HTTP event/snapshot API in deployment OpenAPI | Supply sequence/replay and a complete snapshot or a known-empty engine origin; fail closed on gaps |
-| Worker identity | Metrics label `engine="0"` | A stable worker ID plus restart epoch; bind telemetry and inference to the same supervised engine |
+| Request-specific cache prefix | c's `POST /lookup` now reports `vllm-c: [LocalCPUBackend, matched_tokens]`; six-request warm/repeat test below | Add a tier-aware LMCache adapter; CPU observations cannot be used as GPU-resident `H_j` without modeling restoration. a/b controllers are still being started |
+| Event integrity | No native KV event/snapshot stream has been verified on this deployment; lookup has no sequence/epoch/freshness fields | Verify eviction/restart invalidation and observation freshness, or supply sequence/replay and a complete snapshot; fail closed on gaps |
+| Worker identity | Metrics label `engine="0"`; lookup identifies `vllm-c`, but inference returns neither routing identity header | A stable worker ID plus restart epoch; bind telemetry and inference to the same supervised engine |
 | Serving compatibility | `/version`, `/v1/models`: vLLM version, model root, served alias; a reports max context 4096 | Pin model/tokenizer revisions, tokenizer/template digest, block size, hash algorithm, cache groups, dtype, TP/DP and serving settings in a deployment fingerprint |
 | Running/waiting/cache occupancy | `/metrics` exposes all three; `/load` returns `server_load` | Use to audit the Router ledger; do not add these values to ledger in-flight counts |
 | Per-request service times | Current inference `metrics` is null; `/metrics` has aggregate histograms | Enable `--enable-per-request-metrics` and collect timing samples by `L`, actual cached tokens, output tokens and Router concurrency |
@@ -385,31 +385,66 @@ Sources:
 
 ## LMCache controller availability probe
 
-On 2026-09-12, a/b were checked at 03:23 UTC and c at 03:33 UTC:
+**Updated 2026-09-12 04:11 UTC (12:11 Asia/Taipei): c's `POST /lookup` works.**
+The earlier 03:33 UTC c probe returned 404; that result is superseded. The
+operator confirmed that c's Controller covers c, while a/b Controllers are
+still being started. Their absence from c's lookup is not a cache miss on a/b.
 
-| Request | a | b | c |
-| --- | --- | --- | --- |
-| `GET /openapi.json` | 200, vLLM inference API | 200, vLLM inference API | 200, vLLM inference API |
-| `GET /metrics` | 200, no LMCache-named metric samples | 200, no LMCache-named metric samples | 200, no LMCache-named metric samples |
-| `POST /lookup` using synthetic rendered tokens | 404 | 404 | 404 |
-| `GET /controller/workers` | 404 | 404 | 404 |
-| `GET /controller/key-stats` | 404 | 404 | 404 |
-| `GET /lookup/info` | 404 | 404 | 404 |
-| `GET /instances` (MP coordinator) | 404 | 404 | 404 |
-| `POST /directory/lookup` (MP coordinator) | 404 | 404 | 404 |
+An initial 1347-token request changed lookup from `{}` to
+`{"vllm-c": ["LocalCPUBackend", 1280]}` after successful inference. We then ran
+three new synthetic contexts twice each on c. All six inference requests and
+all twelve before/after lookups returned 200. Every inference returned prompt
+token IDs exactly matching the renderer.
 
-These results establish that the three tested HTTPS base URLs did not expose the
-queried controller interfaces at that time. They do **not** establish that no
-controller or LMCache worker exists elsewhere. The deployment owner reported
-that c has LMCache; that does not by itself expose Controller lookup on the same
-URL. Its actual Controller URL, API version and worker registrations are still
-needed. No LMCache data source has been enabled or validated in the Router.
+| Prompt tokens | Lookup before first generation | After first generation and on repeat |
+| ---: | --- | --- |
+| 545 | `{}` | `vllm-c: [LocalCPUBackend, 512]` |
+| 1043 | `{}` | `vllm-c: [LocalCPUBackend, 1024]` |
+| 1543 | `{}` | `vllm-c: [LocalCPUBackend, 1536]` |
+
+The six-request metric window added 6262 native prefix queried tokens and
+3120 hit tokens: **49.824% token hit rate**, including the three first-use
+requests and three repeats. The query delta exactly matched their combined
+prompt lengths. This is a small functional smoke test, not a routing benchmark.
+External prefix queries increased by 3142 tokens, with **zero external hits**.
+Thus we observed CPU cache storage and native GPU prefix reuse; this run did
+not exercise or establish CPU-to-GPU cache restoration. There were no
+LMCache-named samples on the exposed `/metrics` route. Idle KV usage was zero
+at both scrapes; it cannot replace request-specific prefix lookup.
+
+The [recorded report](results/lmcache-c-smoke-2026-09-12.json) contains timings,
+layouts, counter snapshots and token-parity results, without prompts/token IDs.
+Inference `metrics` and `usage.prompt_tokens_details` were null, and both
+`x-routing-worker-id` and `x-routing-engine-epoch` were absent in all six
+responses. Engine identity/epoch, eviction/restart handling, CPU restoration
+cost and measured ECT calibration still need verification. The Router's live
+collector still expects the native bridge contract; no LMCache adapter is
+connected yet.
 
 Repeat the read-only test against its explicit URL:
 
 ```sh
 python scripts/routing/probe_lmcache.py --url https://ACTUAL-CONTROLLER-URL
 ```
+
+This probe now queries only `POST /lookup`, using the inference renderer for
+synthetic tokens when available. It does not enumerate other controller APIs.
+A short, un-warmed synthetic lookup may legitimately return an empty layout.
+
+Repeat the opt-in six-request warm/repeat test, including `/metrics` deltas:
+
+```sh
+python scripts/routing/smoke_lmcache.py \
+  --url https://s9930703--vllm-serve-c-serve.modal.run \
+  --output /tmp/lmcache-c-smoke.json
+```
+
+Use `--controller-url` only when that worker's Controller has a separate URL.
+The tool sends three rendered prompts twice each, at most eight output tokens
+per request. It verifies lookup shape/range, cache presence and token parity;
+missing/reset/inconsistent counters produce an unknown hit rate. Counters are
+aggregate observations: concurrent external traffic can affect the window.
+No clear, pin, move, compress, health mutation or check-finish call is needed.
 
 For the in-process controller used by the inspected production-stack design,
 `POST /lookup` returns `layout_info: {instance_id: [location, matched_tokens]}`.
@@ -433,10 +468,10 @@ Contracts:
 
 ### Distinguish inference, internal APIs and the Controller
 
-The same c URL was rechecked after the operator supplied it again:
+Before the Controller became available, the same c URL was rechecked:
 `POST /lookup` returned `404 {"detail":"Not Found"}`, while `POST /health`
-returned `405 {"detail":"Method Not Allowed"}`. Its OpenAPI advertises only
-`GET /health` and the existing vLLM routes. This is evidence about that public
+returned `405 {"detail":"Method Not Allowed"}`. Its OpenAPI advertised only
+`GET /health` and the existing vLLM routes. This was evidence about that public
 HTTP entry point, not about which packages or localhost services are installed
 inside the container. An internal listener on port 6999 is a separate service
 unless the exposed HTTP application forwards requests to it.

@@ -1,0 +1,315 @@
+{
+  "started_at": "2026-09-12T04:11:08.642501+00:00",
+  "inference_url": "https://s9930703--vllm-serve-c-serve.modal.run",
+  "controller_url": "https://s9930703--vllm-serve-c-serve.modal.run",
+  "metrics_before": {
+    "status": 200,
+    "seconds": 1.602,
+    "sampled_at": "2026-09-12T04:11:10.245699+00:00",
+    "values": {
+      "vllm:num_requests_running": 0.0,
+      "vllm:num_requests_waiting": 0.0,
+      "vllm:num_requests_waiting_by_reason": 0.0,
+      "vllm:kv_cache_usage_perc": 0.0,
+      "vllm:prefix_cache_queries_total": 4118.0,
+      "vllm:prefix_cache_queries_created": 1789185590.7324133,
+      "vllm:prefix_cache_hits_total": 2016.0,
+      "vllm:prefix_cache_hits_created": 1789185590.7324362,
+      "vllm:external_prefix_cache_queries_total": 2102.0,
+      "vllm:external_prefix_cache_queries_created": 1789185590.7324674,
+      "vllm:external_prefix_cache_hits_total": 0.0,
+      "vllm:external_prefix_cache_hits_created": 1789185590.7324915
+    }
+  },
+  "samples": [
+    {
+      "scenario": 0,
+      "repeat": 0,
+      "prompt_tokens": 545,
+      "inference": {
+        "status": 200,
+        "seconds": 1.114,
+        "identity_headers": {}
+      },
+      "token_parity": true,
+      "usage": {
+        "prompt_tokens": 545,
+        "total_tokens": 550,
+        "completion_tokens": 5,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "request_metrics": null,
+      "lookup_before": {
+        "status": 200,
+        "seconds": 0.841,
+        "data": {
+          "event_id": "Lookup2592134c-8219-4ec3-8ed0-952cfa9d2e6c",
+          "layout_info": {}
+        }
+      },
+      "lookup_after": {
+        "status": 200,
+        "seconds": 0.865,
+        "data": {
+          "event_id": "Lookup8acbc627-b7c4-4f03-8732-b823dc9046e7",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              512
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": 0,
+      "repeat": 1,
+      "prompt_tokens": 545,
+      "inference": {
+        "status": 200,
+        "seconds": 1.118,
+        "identity_headers": {}
+      },
+      "token_parity": true,
+      "usage": {
+        "prompt_tokens": 545,
+        "total_tokens": 553,
+        "completion_tokens": 8,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "request_metrics": null,
+      "lookup_before": {
+        "status": 200,
+        "seconds": 0.832,
+        "data": {
+          "event_id": "Lookup0c16f06f-e554-4bb6-b24a-42cce4589c12",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              512
+            ]
+          }
+        }
+      },
+      "lookup_after": {
+        "status": 200,
+        "seconds": 0.927,
+        "data": {
+          "event_id": "Lookupabfae7ea-9258-4493-9e7a-b27fb5225e5c",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              512
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": 1,
+      "repeat": 0,
+      "prompt_tokens": 1043,
+      "inference": {
+        "status": 200,
+        "seconds": 1.073,
+        "identity_headers": {}
+      },
+      "token_parity": true,
+      "usage": {
+        "prompt_tokens": 1043,
+        "total_tokens": 1046,
+        "completion_tokens": 3,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "request_metrics": null,
+      "lookup_before": {
+        "status": 200,
+        "seconds": 0.848,
+        "data": {
+          "event_id": "Lookupd12260c7-1a1f-41af-95d3-467444d0537a",
+          "layout_info": {}
+        }
+      },
+      "lookup_after": {
+        "status": 200,
+        "seconds": 0.887,
+        "data": {
+          "event_id": "Lookup03075112-34f9-4cef-9351-d055f254de38",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              1024
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": 1,
+      "repeat": 1,
+      "prompt_tokens": 1043,
+      "inference": {
+        "status": 200,
+        "seconds": 1.237,
+        "identity_headers": {}
+      },
+      "token_parity": true,
+      "usage": {
+        "prompt_tokens": 1043,
+        "total_tokens": 1051,
+        "completion_tokens": 8,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "request_metrics": null,
+      "lookup_before": {
+        "status": 200,
+        "seconds": 0.848,
+        "data": {
+          "event_id": "Lookupd02af277-b666-4d45-8b52-74535716f547",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              1024
+            ]
+          }
+        }
+      },
+      "lookup_after": {
+        "status": 200,
+        "seconds": 0.85,
+        "data": {
+          "event_id": "Lookup90192118-b46a-497d-a273-90213c0f1778",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              1024
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": 2,
+      "repeat": 0,
+      "prompt_tokens": 1543,
+      "inference": {
+        "status": 200,
+        "seconds": 1.046,
+        "identity_headers": {}
+      },
+      "token_parity": true,
+      "usage": {
+        "prompt_tokens": 1543,
+        "total_tokens": 1546,
+        "completion_tokens": 3,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "request_metrics": null,
+      "lookup_before": {
+        "status": 200,
+        "seconds": 0.899,
+        "data": {
+          "event_id": "Lookup5ba1b2a3-bedd-4dad-83c9-726d1dce4077",
+          "layout_info": {}
+        }
+      },
+      "lookup_after": {
+        "status": 200,
+        "seconds": 0.831,
+        "data": {
+          "event_id": "Lookup01bf5ec3-2d87-4d4f-a656-d7f62efca21a",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              1536
+            ]
+          }
+        }
+      }
+    },
+    {
+      "scenario": 2,
+      "repeat": 1,
+      "prompt_tokens": 1543,
+      "inference": {
+        "status": 200,
+        "seconds": 1.012,
+        "identity_headers": {}
+      },
+      "token_parity": true,
+      "usage": {
+        "prompt_tokens": 1543,
+        "total_tokens": 1546,
+        "completion_tokens": 3,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "request_metrics": null,
+      "lookup_before": {
+        "status": 200,
+        "seconds": 0.951,
+        "data": {
+          "event_id": "Lookup809eeb7b-e59d-41b2-9b27-61cc61175a3f",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              1536
+            ]
+          }
+        }
+      },
+      "lookup_after": {
+        "status": 200,
+        "seconds": 0.945,
+        "data": {
+          "event_id": "Lookup72369533-df92-4e46-a8a9-0cc64ff348da",
+          "layout_info": {
+            "vllm-c": [
+              "LocalCPUBackend",
+              1536
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "metrics_after": {
+    "status": 200,
+    "seconds": 1.46,
+    "sampled_at": "2026-09-12T04:11:31.562630+00:00",
+    "values": {
+      "vllm:num_requests_running": 0.0,
+      "vllm:num_requests_waiting": 0.0,
+      "vllm:num_requests_waiting_by_reason": 0.0,
+      "vllm:kv_cache_usage_perc": 0.0,
+      "vllm:prefix_cache_queries_total": 10380.0,
+      "vllm:prefix_cache_queries_created": 1789185590.7324133,
+      "vllm:prefix_cache_hits_total": 5136.0,
+      "vllm:prefix_cache_hits_created": 1789185590.7324362,
+      "vllm:external_prefix_cache_queries_total": 5244.0,
+      "vllm:external_prefix_cache_queries_created": 1789185590.7324674,
+      "vllm:external_prefix_cache_hits_total": 0.0,
+      "vllm:external_prefix_cache_hits_created": 1789185590.7324915
+    }
+  },
+  "native_prefix_delta": {
+    "status": "observed",
+    "queried_tokens": 6262.0,
+    "hit_tokens": 3120.0,
+    "token_hit_rate": 0.4982433727243692
+  },
+  "external_prefix_delta": {
+    "status": "observed",
+    "queried_tokens": 3142.0,
+    "hit_tokens": 0.0,
+    "token_hit_rate": 0.0
+  },
+  "expected_prompt_tokens": 6262,
+  "metric_window_matches_prompt_tokens": true,
+  "finished_at": "2026-09-12T04:11:31.562667+00:00"
+}
