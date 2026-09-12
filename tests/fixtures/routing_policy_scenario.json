@@ -1,0 +1,175 @@
+{
+  "description": "Synthetic acceptance scenario; not measured vLLM coefficients or observed cache contents.",
+  "request": {
+    "model": "local",
+    "fingerprint": "synthetic-only",
+    "prompt_tokens": 8192,
+    "output_limit": 128
+  },
+  "routing_config": {
+    "cost_models": {
+      "g0": {
+        "fingerprint": "synthetic-only",
+        "calibration_version": "synthetic-test-only",
+        "prompt_range": [
+          1,
+          8192
+        ],
+        "output_range": [
+          1,
+          128
+        ],
+        "concurrency_range": [
+          0,
+          100
+        ],
+        "output_prior": 128,
+        "prefill": [
+          0,
+          0.1953125,
+          0
+        ],
+        "decode": [
+          500,
+          0,
+          0
+        ],
+        "beta": 0.4,
+        "queue_ms": 0
+      },
+      "g1": {
+        "fingerprint": "synthetic-only",
+        "calibration_version": "synthetic-test-only",
+        "prompt_range": [
+          1,
+          8192
+        ],
+        "output_range": [
+          1,
+          128
+        ],
+        "concurrency_range": [
+          0,
+          100
+        ],
+        "output_prior": 128,
+        "prefill": [
+          0,
+          0.1953125,
+          0
+        ],
+        "decode": [
+          500,
+          0,
+          0
+        ],
+        "beta": 0.4,
+        "queue_ms": 0
+      },
+      "g2": {
+        "fingerprint": "synthetic-only",
+        "calibration_version": "synthetic-test-only",
+        "prompt_range": [
+          1,
+          8192
+        ],
+        "output_range": [
+          1,
+          128
+        ],
+        "concurrency_range": [
+          0,
+          100
+        ],
+        "output_prior": 128,
+        "prefill": [
+          0,
+          0.244140625,
+          0
+        ],
+        "decode": [
+          500,
+          0,
+          0
+        ],
+        "beta": 0.4,
+        "queue_ms": 0
+      }
+    }
+  },
+  "snapshot": {
+    "workers": [
+      {
+        "worker_index": 0,
+        "worker_url": "http://fixture-g0",
+        "available": true,
+        "inflight": 6,
+        "metadata": {
+          "worker_id": "g0",
+          "model": "local",
+          "fingerprint": "synthetic-only",
+          "engine_epoch": "epoch-0",
+          "block_size": 16
+        },
+        "evidence": {
+          "status": "observed",
+          "tokens": 6144,
+          "engine_epoch": "epoch-0",
+          "sequence": 10,
+          "age_ms": 0
+        }
+      },
+      {
+        "worker_index": 1,
+        "worker_url": "http://fixture-g1",
+        "available": true,
+        "inflight": 3,
+        "metadata": {
+          "worker_id": "g1",
+          "model": "local",
+          "fingerprint": "synthetic-only",
+          "engine_epoch": "epoch-1",
+          "block_size": 16
+        },
+        "evidence": {
+          "status": "observed",
+          "tokens": 4096,
+          "engine_epoch": "epoch-1",
+          "sequence": 10,
+          "age_ms": 0
+        }
+      },
+      {
+        "worker_index": 2,
+        "worker_url": "http://fixture-g2",
+        "available": true,
+        "inflight": 1,
+        "metadata": {
+          "worker_id": "g2",
+          "model": "local",
+          "fingerprint": "synthetic-only",
+          "engine_epoch": "epoch-2",
+          "block_size": 16
+        },
+        "evidence": {
+          "status": "observed",
+          "tokens": 0,
+          "engine_epoch": "epoch-2",
+          "sequence": 10,
+          "age_ms": 0
+        }
+      }
+    ],
+    "home": null
+  },
+  "expected": {
+    "prefix_max": 0,
+    "least_load_kv": 2,
+    "kv_batch_ect": 1,
+    "ect_ms": [
+      3060,
+      2860,
+      3500
+    ]
+  }
+}

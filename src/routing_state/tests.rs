@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     core::{BasicWorker, WorkerType},
-    policies::ObservedPolicy,
+    policies::{self, ObservedPolicy},
 };
 use kv::{Block, KvEvent};
 use telemetry::{KvDelta, KvSnapshot, WorkerInfo, WorkerTelemetry};

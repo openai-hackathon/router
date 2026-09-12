@@ -4,6 +4,7 @@ pub mod config;
 pub mod cost;
 pub mod features;
 pub mod kv;
+pub mod selection;
 pub mod telemetry;
 
 use crate::{
@@ -11,11 +12,15 @@ use crate::{
         dispatch::{DispatchLedger, Reservation},
         Worker,
     },
-    policies::{self, LoadBalancingPolicy, RequestHeaders},
+    policies::{LoadBalancingPolicy, RequestHeaders},
 };
 use features::RequestFeatures;
 use parking_lot::Mutex;
-use serde::Serialize;
+pub use selection::{
+    CandidateSnapshot, RoutingDecision, SelectionSnapshot, SessionHomeSnapshot, WorkerMetadata,
+    WorkerSnapshot,
+};
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     sync::Arc,
@@ -39,7 +44,7 @@ impl Ranking {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum PrefixEvidence {
     Observed {
@@ -51,16 +56,6 @@ pub enum PrefixEvidence {
     Unknown,
     Stale,
     Unsupported,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct CandidateSnapshot {
-    pub worker_index: usize,
-    pub inflight: usize,
-    pub reusable_tokens: usize,
-    pub ect_ms: Option<f64>,
-    pub tie_rank: usize,
-    pub evidence: PrefixEvidence,
 }
 
 #[derive(Clone, Debug)]
@@ -128,6 +123,65 @@ impl SharedRoutingState {
         })
     }
 
+    /// Capture local evidence and pre-reservation loads under the ledger lock.
+    /// Future data providers only need to produce this source-independent shape.
+    pub fn snapshot(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        features: &RequestFeatures,
+    ) -> SelectionSnapshot {
+        let state = self.state.lock();
+        let workers = workers
+            .iter()
+            .enumerate()
+            .map(|(index, worker)| {
+                let telemetry = state.workers.get(worker.url());
+                let evidence = match telemetry {
+                    None => PrefixEvidence::Unknown,
+                    Some(t) if !t.info.supported || features.tokens.is_none() => {
+                        PrefixEvidence::Unsupported
+                    }
+                    Some(t) if !t.synced => PrefixEvidence::Stale,
+                    Some(t) => PrefixEvidence::Observed {
+                        tokens: t
+                            .index
+                            .reusable_tokens(features.tokens.as_ref().unwrap(), t.info.block_size),
+                        engine_epoch: t.info.engine_epoch.clone(),
+                        sequence: t.sequence,
+                        age_ms: t.observed_at.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                    },
+                };
+                WorkerSnapshot {
+                    worker_index: index,
+                    worker_url: worker.url().to_owned(),
+                    available: worker.is_available(),
+                    inflight: worker.load(),
+                    metadata: telemetry.map(|t| WorkerMetadata {
+                        worker_id: t.info.worker_id.clone(),
+                        model: t.info.model.clone(),
+                        fingerprint: t.info.fingerprint.clone(),
+                        engine_epoch: t.info.engine_epoch.clone(),
+                        block_size: t.info.block_size,
+                    }),
+                    evidence,
+                }
+            })
+            .collect();
+        let home = features
+            .fingerprint
+            .as_ref()
+            .zip(features.session_id.as_ref())
+            .and_then(|(fingerprint, session)| {
+                state.sessions.get(&(fingerprint.clone(), session.clone()))
+            })
+            .map(|home| SessionHomeSnapshot {
+                worker_url: home.worker_url.clone(),
+                engine_epoch: home.epoch.clone(),
+                age_ms: home.updated.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            });
+        SelectionSnapshot { workers, home }
+    }
+
     /// Called inside DispatchLedger's lock; no network or tokenization here.
     pub fn select(
         &self,
@@ -135,145 +189,14 @@ impl SharedRoutingState {
         ranking: Ranking,
         features: &RequestFeatures,
     ) -> Option<usize> {
-        let state = self.state.lock();
-        let mut ordered: Vec<_> = (0..workers.len()).collect();
-        ordered.sort_by_key(|&i| workers[i].url());
-        let mut fallback = features.fallback_reason;
-        let mut candidates = Vec::new();
-        for (tie_rank, index) in ordered.into_iter().enumerate() {
-            let worker = &workers[index];
-            if !worker.is_available() {
-                continue;
-            }
-            let telemetry = state.workers.get(worker.url());
-            if let Some(t) = telemetry {
-                // Known incompatible serving configs are excluded; missing KV
-                // evidence itself must never remove an otherwise usable worker.
-                if features.model.as_deref().is_some_and(|m| m != t.info.model)
-                    || features
-                        .fingerprint
-                        .as_deref()
-                        .is_some_and(|f| f != t.info.fingerprint)
-                {
-                    continue;
-                }
-            }
-            let evidence = match telemetry {
-                None => PrefixEvidence::Unknown,
-                Some(t) if !t.info.supported || features.tokens.is_none() => {
-                    PrefixEvidence::Unsupported
-                }
-                Some(t)
-                    if !t.synced
-                        || t.observed_at.elapsed().as_millis()
-                            > self.config.max_evidence_age_ms as u128 =>
-                {
-                    PrefixEvidence::Stale
-                }
-                Some(t) => PrefixEvidence::Observed {
-                    tokens: t
-                        .index
-                        .reusable_tokens(features.tokens.as_ref().unwrap(), t.info.block_size),
-                    engine_epoch: t.info.engine_epoch.clone(),
-                    sequence: t.sequence,
-                    age_ms: t.observed_at.elapsed().as_millis() as u64,
-                },
-            };
-            let reusable = match &evidence {
-                PrefixEvidence::Observed { tokens, .. } => *tokens,
-                PrefixEvidence::Unknown => {
-                    fallback.get_or_insert("unknown_kv");
-                    0
-                }
-                PrefixEvidence::Stale => {
-                    fallback.get_or_insert("stale_kv");
-                    0
-                }
-                PrefixEvidence::Unsupported => {
-                    fallback.get_or_insert("unsupported_kv");
-                    0
-                }
-            };
-            candidates.push(CandidateSnapshot {
-                worker_index: index,
-                inflight: worker.load(),
-                reusable_tokens: reusable,
-                ect_ms: None,
-                tie_rank,
-                evidence,
-            });
-        }
-        if ranking == Ranking::KvBatchEct && fallback.is_none() {
-            for c in &mut candidates {
-                let info = &state.workers[workers[c.worker_index].url()].info;
-                let result = self
-                    .config
-                    .cost_models
-                    .get(&info.worker_id)
-                    .ok_or("missing_cost_model")
-                    .and_then(|model| {
-                        model.predict(
-                            &info.fingerprint,
-                            features.tokens.as_ref().unwrap().len(),
-                            c.reusable_tokens,
-                            features.output_limit,
-                            c.inflight,
-                        )
-                    });
-                match result {
-                    Ok((ect, _)) => c.ect_ms = Some(ect),
-                    Err(reason) => {
-                        fallback.get_or_insert(reason);
-                    }
-                }
-            }
-        }
-        let mut chosen = if fallback.is_some() {
-            candidates
-                .iter()
-                .min_by_key(|c| (c.inflight, c.tie_rank))
-                .map(|c| c.worker_index)
-        } else {
-            match ranking {
-                Ranking::PrefixMax => policies::prefix_max::choose(&candidates),
-                Ranking::LeastLoadKv => policies::least_load_kv::choose(&candidates),
-                Ranking::KvBatchEct => policies::kv_batch_ect::choose(&candidates).ok().flatten(),
-            }
-        }?;
-        let mut affinity = false;
-        if ranking == Ranking::KvBatchEct && fallback.is_none() {
-            if let (Some(session), Some(fingerprint)) =
-                (&features.session_id, &features.fingerprint)
-            {
-                if let Some(home) = state.sessions.get(&(fingerprint.clone(), session.clone())) {
-                    if home.updated.elapsed() < Duration::from_secs(self.config.session_ttl_secs) {
-                        if let Some(candidate) = candidates
-                            .iter()
-                            .find(|c| workers[c.worker_index].url() == home.worker_url)
-                        {
-                            let best = candidates
-                                .iter()
-                                .find(|c| c.worker_index == chosen)
-                                .unwrap();
-                            let info = &state.workers[&home.worker_url].info;
-                            if info.engine_epoch == home.epoch
-                                && candidate.reusable_tokens
-                                    >= best.reusable_tokens.saturating_add(info.block_size)
-                                && candidate.ect_ms.unwrap() <= 1.015 * best.ect_ms.unwrap() + 10.0
-                            {
-                                chosen = candidate.worker_index;
-                                affinity = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        metrics::counter!("router_routing_decisions_total", "policy" => ranking.name(), "fallback" => fallback.unwrap_or("none")).increment(1);
-        tracing::info!(request_id = %features.request_id, policy = ranking.name(), fallback_reason = fallback,
+        let decision = self
+            .snapshot(workers, features)
+            .decide(ranking, features, &self.config)?;
+        metrics::counter!("router_routing_decisions_total", "policy" => ranking.name(), "fallback" => decision.fallback_reason.unwrap_or("none")).increment(1);
+        tracing::info!(request_id = %features.request_id, policy = ranking.name(), fallback_reason = decision.fallback_reason,
             prompt_tokens = features.tokens.as_ref().map(Vec::len), output_limit = features.output_limit,
-            candidates = %serde_json::to_string(&candidates).unwrap_or_default(), chosen_worker = workers[chosen].url(), affinity, "routing decision");
-        Some(chosen)
+            candidates = %serde_json::to_string(&decision.candidates).unwrap_or_default(), chosen_worker = workers[decision.chosen_worker].url(), affinity = decision.affinity_applied, "routing decision");
+        Some(decision.chosen_worker)
     }
 
     pub fn reserve(
