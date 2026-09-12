@@ -1,0 +1,561 @@
+{
+  "experiments": [
+    {
+      "started_at": "2026-09-12T05:27:32.501190+00:00",
+      "endpoint": "https://s9930703--vllm-serve-d-serve.modal.run",
+      "purpose": "one controlled synthetic warm request; prefix truncation/extension/divergence queries",
+      "render_status": 200,
+      "prompt_tokens": 1045,
+      "before": {
+        "status": 200,
+        "seconds": 1.049,
+        "headers": {
+          "Alt-Svc": "h3=\":443\"; ma=2592000",
+          "Content-Type": "application/json",
+          "Date": "Sat, 12 Sep 2026 05:27:34 GMT",
+          "Modal-Function-Call-Id": "fc-01M2A1BNVNAYV18Y4T6RWHTFHX",
+          "Vary": "accept-encoding",
+          "Connection": "close",
+          "Transfer-Encoding": "chunked"
+        },
+        "body": {
+          "event_id": "Lookupa677b5c3-0314-4ee9-af55-86cff4e8f499",
+          "layout_info": {}
+        },
+        "query": "full_before_generation",
+        "query_tokens": 1045
+      },
+      "inference": {
+        "status": 200,
+        "seconds": 2.035,
+        "usage": {
+          "prompt_tokens": 1045,
+          "total_tokens": 1053,
+          "completion_tokens": 8,
+          "prompt_tokens_details": null,
+          "completion_tokens_details": null
+        },
+        "token_parity": true,
+        "identity_headers": {}
+      },
+      "after": [
+        {
+          "status": 200,
+          "seconds": 1.236,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:27:37 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1BS2P4WXPBF3SCBGVV5JV",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupb8bd6136-5b13-4db8-989b-1c241645bc01",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1045
+              ]
+            }
+          },
+          "query": "full",
+          "query_tokens": 1045
+        },
+        {
+          "status": 200,
+          "seconds": 1.285,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:27:37 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1BS4D0J3JCDG4DWSPMBB4",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupb03da393-54a0-4f19-aba7-cf996997cc1a",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                512
+              ]
+            }
+          },
+          "query": "prefix_512",
+          "query_tokens": 512
+        },
+        {
+          "status": 200,
+          "seconds": 0.972,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:27:38 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1BT1RQ77XV65CFAE6CH8C",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupdb8b9a76-3e2d-4500-94b8-5e4592d44c36",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1024
+              ]
+            }
+          },
+          "query": "prefix_1024",
+          "query_tokens": 1024
+        },
+        {
+          "status": 200,
+          "seconds": 0.959,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:27:38 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1BT1S8A59DJX1CR5SBK0V",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup800e9fa7-32c0-4da0-8f5b-0f2fd8d66f80",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1024
+              ]
+            }
+          },
+          "query": "prefix_minus_one",
+          "query_tokens": 1044
+        },
+        {
+          "status": 200,
+          "seconds": 1.155,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:27:40 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1BV5K18XHWMQTPT808TDM",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupdb50467c-b562-4af7-8e83-78cbb75ba279",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1024
+              ]
+            }
+          },
+          "query": "extended_16",
+          "query_tokens": 1061
+        },
+        {
+          "status": 200,
+          "seconds": 1.151,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:27:40 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1BV5Q46PRNPS505B4A6Y4",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup2190caf0-843d-4af1-881c-a611293e0a17",
+            "layout_info": {}
+          },
+          "query": "changed_first_token",
+          "query_tokens": 1045
+        },
+        {
+          "status": 200,
+          "seconds": 0.984,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:27:40 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1BW3A6A15X73SYT7NQWGM",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup5d08a186-7c33-4924-bf1d-e3361e7ea776",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                512
+              ]
+            }
+          },
+          "query": "changed_token_512",
+          "query_tokens": 1045
+        }
+      ],
+      "finished_at": "2026-09-12T05:27:40.998250+00:00"
+    },
+    {
+      "started_at": "2026-09-12T05:28:12.499359+00:00",
+      "endpoint": "https://s9930703--vllm-serve-d-serve.modal.run",
+      "purpose": "one controlled synthetic warm request; prefix truncation/extension/divergence queries",
+      "render_status": 200,
+      "prompt_tokens": 1043,
+      "before": {
+        "status": 200,
+        "seconds": 1.127,
+        "headers": {
+          "Alt-Svc": "h3=\":443\"; ma=2592000",
+          "Content-Type": "application/json",
+          "Date": "Sat, 12 Sep 2026 05:28:15 GMT",
+          "Modal-Function-Call-Id": "fc-01M2A1CXJNXQFJCZ2A1SNMCASB",
+          "Vary": "accept-encoding",
+          "Connection": "close",
+          "Transfer-Encoding": "chunked"
+        },
+        "body": {
+          "event_id": "Lookupeb970cb5-b611-482b-98e0-c573ae869224",
+          "layout_info": {}
+        },
+        "query": "full_before_generation",
+        "query_tokens": 1043
+      },
+      "inference": {
+        "status": 200,
+        "seconds": 1.852,
+        "usage": {
+          "prompt_tokens": 1043,
+          "total_tokens": 1051,
+          "completion_tokens": 8,
+          "prompt_tokens_details": null,
+          "completion_tokens_details": null
+        },
+        "token_parity": true,
+        "identity_headers": {}
+      },
+      "repeat_after_generation": [
+        {
+          "status": 200,
+          "seconds": 1.189,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:18 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1D0HSXDE0JWMG6XKAGHKW",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup4dd48c8a-2b06-42ee-aecd-700c33b1c3b5",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1043
+              ]
+            }
+          },
+          "query": "identical_after_generation_1",
+          "query_tokens": 1043
+        },
+        {
+          "status": 200,
+          "seconds": 0.987,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:19 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1D1V1SZJ3NKHNVN75Y74A",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup1549eae2-ddc2-497c-9b57-235e7aca2972",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1043
+              ]
+            }
+          },
+          "query": "identical_after_generation_2",
+          "query_tokens": 1043
+        },
+        {
+          "status": 200,
+          "seconds": 0.998,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:20 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1D32QN411HDB3S67YJDNR",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup4fc86208-75ea-48ad-b4c0-91187c39d5bb",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1043
+              ]
+            }
+          },
+          "query": "identical_after_generation_3",
+          "query_tokens": 1043
+        },
+        {
+          "status": 200,
+          "seconds": 1.211,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:22 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1D4H7PFC8G8KEZSFS8K0M",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup850a61cb-2538-454e-9fe8-c7427213ccab",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1043
+              ]
+            }
+          },
+          "query": "identical_after_generation_4",
+          "query_tokens": 1043
+        },
+        {
+          "status": 200,
+          "seconds": 1.194,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:23 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1D61YBG9Y0HKNR76D3NWQ",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup40b30eaa-c639-4a54-ad20-7067c4d4e4fd",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1043
+              ]
+            }
+          },
+          "query": "identical_after_generation_5",
+          "query_tokens": 1043
+        },
+        {
+          "status": 200,
+          "seconds": 1.128,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:25 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1D7EHB2QAZ8W4ZW8RMJX7",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup71a95a9d-24a6-4715-bbcf-31409176ae61",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1043
+              ]
+            }
+          },
+          "query": "identical_after_generation_6",
+          "query_tokens": 1043
+        }
+      ],
+      "after": [
+        {
+          "status": 200,
+          "seconds": 1.389,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:27 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1D92A61TFEAQEBBQR3NHF",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupf5b0504c-3d69-4063-9dc3-05b5690a4bff",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1043
+              ]
+            }
+          },
+          "query": "full",
+          "query_tokens": 1043
+        },
+        {
+          "status": 200,
+          "seconds": 1.317,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:26 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1D91DM46Z1S68JFF5EDFE",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupb03b4d17-3f6d-4b23-877d-f6b401d15642",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                512
+              ]
+            }
+          },
+          "query": "prefix_512",
+          "query_tokens": 512
+        },
+        {
+          "status": 200,
+          "seconds": 1.223,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:28 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1DA6CHFFSCHDXZQD8SEV7",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupc34d4909-d4cc-442e-b820-8e3ad6248f9e",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1024
+              ]
+            }
+          },
+          "query": "prefix_1024",
+          "query_tokens": 1024
+        },
+        {
+          "status": 200,
+          "seconds": 1.151,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:28 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1DA68G8VSC469WVGN82P3",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupb3e86176-7212-4e25-b4fd-07a9d11e2ef4",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1024
+              ]
+            }
+          },
+          "query": "prefix_minus_one",
+          "query_tokens": 1042
+        },
+        {
+          "status": 200,
+          "seconds": 1.3,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:29 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1DBE15N3KV8S1SS3094QR",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupb949e68a-3d08-44fc-b2d6-55c8dffbed7d",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                1024
+              ]
+            }
+          },
+          "query": "extended_16",
+          "query_tokens": 1059
+        },
+        {
+          "status": 200,
+          "seconds": 1.234,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:29 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1DBDEGQVXD7EFSEZ7GNAH",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookupf8226c61-ce31-4ea2-ab2e-877dcef8da03",
+            "layout_info": {}
+          },
+          "query": "changed_first_token",
+          "query_tokens": 1043
+        },
+        {
+          "status": 200,
+          "seconds": 1.09,
+          "headers": {
+            "Alt-Svc": "h3=\":443\"; ma=2592000",
+            "Content-Type": "application/json",
+            "Date": "Sat, 12 Sep 2026 05:28:30 GMT",
+            "Modal-Function-Call-Id": "fc-01M2A1DCFY6ACH7WC3G1AFT3SK",
+            "Vary": "accept-encoding",
+            "Connection": "close",
+            "Transfer-Encoding": "chunked"
+          },
+          "body": {
+            "event_id": "Lookup378e3231-8ef7-4bb2-be4d-8652aed2d029",
+            "layout_info": {
+              "vllm-d": [
+                "LocalCPUBackend",
+                512
+              ]
+            }
+          },
+          "query": "changed_token_512",
+          "query_tokens": 1043
+        }
+      ],
+      "finished_at": "2026-09-12T05:28:30.530198+00:00"
+    }
+  ],
+  "note": "Only synthetic probe results; prompt text and token arrays are omitted."
+}

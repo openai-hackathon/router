@@ -100,6 +100,12 @@ other workers; it does not claim knowledge of the controller's internal lag.
 `LocalCPUBackend`. The usable prefix is capped at complete native blocks before
 the final prompt token; restoration accounting retains the original stored
 length. These values do not claim GPU residency or include an unknown GPU hit.
+The raw CPU match may end inside a native block. The adapter preserves that
+length as `cached_tokens` and computes `tokens` as
+`floor(min(cached_tokens, L - 1) / block_size) * block_size`.
+For example, a 1043-token full CPU match remains 1043 for restoration accounting
+and supplies 1040 routing tokens with block size 16. Repeated lookups refresh
+both values, including increases and decreases.
 The baselines rank restorable CPU prefix when this source is trusted; native
 GPU-prefix baselines and controller-prefix baselines must be labeled separately
 in experimental results.
@@ -118,7 +124,7 @@ ledger; termination still needs an inference terminal event or independently
 verified lifecycle reconciliation. Endpoint mode does not assign an invented
 epoch to attempts or use controller identity changes to release them.
 
-HTTP/schema/health failures, unsupported tiers, overlong/non-block prefixes,
+HTTP/schema/health failures, unsupported tiers, overlong/non-integer prefixes,
 missing worker configurations, or stale observations become unknown/stale for
 the common selector. No candidate is removed just because its controller failed.
 In verified mode, known incompatible fingerprints are excluded even when other
@@ -161,7 +167,9 @@ non-finite or out-of-range restore models cause whole-decision least-load
 fallback; a proven zero CPU match needs no restore model. Do not use synthetic
 test coefficients in production. The [input analysis](ect-observable-inputs.md)
 explains what existing metrics can measure and why the current c/d warm repeats
-did not provide CPU restoration samples.
+did not provide CPU restoration samples. Later [d samples](results/router-d-partial-prefix-smoke-2026-09-12.json)
+include external hits, but do not yet isolate a restoration-time curve; see the
+[revised policy proposal](cache-aware-ect-design.md).
 
 ## Verification
 
@@ -197,3 +205,12 @@ so its empty layout is not evidence that d's cache was empty.
 Local verification passed 505 Rust unit tests, 14 snapshot
 acceptance tests and 26 Python tests, including all three policies through the
 real binary with no fingerprints or routing identity headers.
+
+After accepting partial CPU prefixes, the [d-only Router smoke](results/router-d-partial-prefix-smoke-2026-09-12.json)
+sent six successful requests through the real binary. Both baselines acquired
+partial-prefix evidence without fallback; ECT acquired the same evidence and
+reported `missing_cost_model`. These single-worker runs validate adapter
+integration, not comparative routing performance. The correction passed three
+focused adapter tests, 15 snapshot tests, 26 Python tests and Clippy.
+The user reported a concurrent benchmark on d, so these timing samples are
+not unloaded calibration data.

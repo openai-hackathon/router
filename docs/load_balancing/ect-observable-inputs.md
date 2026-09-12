@@ -2,7 +2,9 @@
 
 更新：2026-09-12。這份分析區分直接觀測、附條件推估與仍然未知的資訊；它不是已完成實機校準的宣告。
 
-**LMCache adapter 已接入 Router；這輪依使用者指定，假設模型／serving 設定相同、endpoint 固定對應 engine，以 `lmcache.identity_mode: "endpoint"` 暫時略過身分驗證。ECT 仍缺適用範圍內的時間模型校準，以及實際 CPU cache 還原樣本。服務時間本身現在可以開始量測，不必等新的 per-request API。** c、d 的 `/metrics` 已包含 prefill、decode、queue 與 inference histogram，可以在隔離單請求窗口用 `_sum` 的差值取得各階段時間。
+**LMCache adapter 已接入 Router；這輪依使用者指定，假設模型／serving 設定相同、endpoint 固定對應 engine，以 `lmcache.identity_mode: "endpoint"` 暫時略過身分驗證。ECT 仍缺適用範圍內的時間模型校準，以及能辨識 CPU 還原時間的樣本。服務時間本身現在可以開始量測，不必等新的 per-request API。** c、d 的 `/metrics` 已包含 prefill、decode、queue 與 inference histogram，可以在隔離單請求窗口用 `_sum` 的差值取得各階段時間。
+
+**後續更新：** 新的 [d Router smoke](results/router-d-partial-prefix-smoke-2026-09-12.json) 已看到 external hits；其中一個與單次完成一致的窗口為 native=1552、external=4、compute=1。使用者指出 d 同時有背景 benchmark，另有窗口只送一筆卻完成多筆，所以這輪不作空載校準。下文 c/d 與 c 六次實驗的 external=0 是較早樣本的結果，不代表目前仍全是零。新的資料解讀與 policy 改版建議見 [Cache-aware ECT 設計](cache-aware-ect-design.md)。
 
 設定方式見 [LMCache adapter](lmcache-adapter.md)。以下仍列出哪些資訊實際未知，以區分部署假設與直接觀測；epoch／fingerprint 的缺項在 endpoint 模式不再阻擋選路。lookup／health 失敗、資料過期或成本模型缺失仍會共同降級。
 
@@ -29,7 +31,7 @@
 | 每台 worker 的 prefix 證據 | 正確 tokens 的 `/lookup` 回傳 instance、storage tier、matched prefix length；隔離 metrics 窗口可事後量到 native/external 實際命中 tokens | CPU inventory 不等於 GPU 已駐留 prefix；事後命中率不能預知另一個 prompt 的命中 | `controller_inventory`、`tier=LocalCPUBackend`、`observed_at`；GPU 證據仍需分開 |
 | engine 身分與失效 | config 的 endpoint→instance 對應、health、exporter 的 process start / metric creation / counter reset，可作失效警訊 | instance 名稱、`engine="0"`、operation ID 都不是 engine epoch；穩定 counters 不代表 cache 沒 eviction | `identity=configured`、`engine_epoch=unknown`；弱失效訊號另存 |
 | ECT 服務時間 | `_sum/_count` 差分可在隔離窗口取得 prefill/decode/queue；usage 提供實際輸出長度；Router 提供送出前 in-flight | 兩次樣本不足以產生可泛化的 P/D/β/Q；backend 時間不含完整網路與 Modal 外部排隊 | `measured_interval` 加上歸屬檢查、量測位置與模型適用範圍 |
-| CPU cache 還原成本 | 可以設計 confirmed external-hit 的配對測量；日後取得 retrieve/GPU transfer 指標可直接量測 | 現有 repeat 的外部 hits 全為 0，不能從 repeat 加速或 lookup RTT 算出 CPU→GPU 還原成本 | 目前 `restore_cost=unknown`，不能填 0 |
+| CPU cache 還原成本 | 已有後續 external-hit 線索，可設計不同命中長度的配對測量；日後取得 retrieve/GPU transfer 指標可拆細時間 | 少量 external tokens 與混合 elapsed 不能辨識還原曲線；repeat 加速或 lookup RTT 不等於 CPU→GPU 還原成本 | 目前 `restore_cost=unknown`，不能填 0 |
 
 ## Prefix 與 hit rate：可取得，但要保留層級與時間
 
@@ -125,7 +127,7 @@ phase_ms = 1000 × (phase_sum_after − phase_sum_before)
 
 vLLM 0.29 的 prefill interval 從第一次 scheduled 到 first token；decode 從 first token 到 last token；queue 從 queued 到第一次 scheduled。這些是 engine 事件的經過時間，可能包含 preemption。prefill 已含產生第一個 output token，decode 不是再計一次全部 O 個 tokens 的 GPU kernel 純時間。[vLLM timing 定義](https://github.com/vllm-project/vllm/blob/v0.29.0/vllm/v1/metrics/stats.py#L484)
 
-因此現在可以開始累積「量測到的 P、D、Q」，但不要直接把上述四個數字當係數：只有一個 L、兩個 H 狀態、每台兩次、且沒有有負載的樣本。d 的首次較慢可能混有 warm-up 或配置差異；兩台實際 O 也不同，不能拿總時間比值當服務能力比值。
+因此現在可以開始累積「量測到的 P、D、Q」，但不要直接把上述四個數字當係數：只有一個 L、兩個 H 狀態、每台兩次，且未控制多種負載。d 的首次較慢可能混有 warm-up 或配置差異；兩台實際 O 也不同，不能拿總時間比值當服務能力比值。completion count=1 也不保證沒有其他尚未完成的請求與它共用 GPU。
 
 可行的後續校準程序：
 
@@ -139,9 +141,9 @@ vLLM 0.29 的 prefill interval 從第一次 scheduled 到 first token；decode �
 
 若想預測 Router 使用者感受到的完成時間，還需包含傳輸/HTTP preprocessing/Modal 路徑成本。表中同一筆 `Client HTTP − backend E2E` 約 846–1029 ms，是可量到的外部總差額；它混合網路、連線、平台與量測邊界，不能全部叫作 network RTT 或 backend queue。單次 lookup 的 HTTP 時間也約 0.84–1.03 秒，不能當成 GPU 或 CPU transfer 成本。這些 overhead 應分別量測，避免塞入 β/Q 又重複計算。
 
-## CPU 還原成本：目前仍無可辨識樣本
+## CPU 還原成本：已有 external-hit 線索，仍無可辨識的時間曲線
 
-目前 `/lookup` 證實 CPU inventory 存在；上述兩輪 smoke 的 external cache hit 增量皆為 0，新增 c/d 窗口的 `source="external_kv_transfer"` 也都是 0。這意味著這批請求沒有觀測到經 connector 使用的外部 cache tokens，**無法量出 CPU→GPU restore 成本**。這不證明 LMCache 不支援還原，只表示實驗沒有隔離出這條路徑。
+目前 `/lookup` 證實 CPU inventory 存在；上述較早兩輪 smoke 的 external cache hit 增量皆為 0，c/d 窗口的 `source="external_kv_transfer"` 也都是 0。這意味著較早這批請求沒有觀測到經 connector 使用的外部 cache tokens。後續 d 窗口已看到 external=4，但 prefill elapsed 還包含其他工作與背景負載，**仍無法量出 CPU→GPU restore 的時間曲線**。新的成本建模可直接學習 cache 對延遲的淨影響，而不必先拆出純 transfer；此方案尚未取代現行成本模型。
 
 要從既有可存取的 API 推估，至少需要一批符合以下條件的 request：lookup 顯示 CPU prefix；其 native 實际 H 比 CPU prefix 短；執行後 external transfer token counter 確實增加。可等待自然 GPU eviction，或另外設計保留 CPU、減少 GPU residency 的受控實驗；不能將一般 warm repeat 當成 CPU restore。
 
@@ -177,6 +179,6 @@ CPU 來源若要進 ECT，應對 tier 保留額外成本或使用包含該 tier 
 - 保存原始 lookup tier/length/operation ID、觀測時間與來源狀態；對不受支援的 tier 或 schema 明確降級。
 - `layout_info={}` 只表示這次 controller 沒報告該 prefix。尚未驗證健康/身分/完整性的來源，不能據此產生精確 H=0。
 - `H_gpu`、CPU inventory 與執行後的 cache hit counters 分開記錄；不以 hit rate 推任意 prompt 的 H。
-- 先建立服務時間採樣與原生 cache 模型；engine epoch 與 CPU restore 未補齊時，完整 ECT 的 evidence/model gating 維持明確 fallback。
+- 先建立服務時間採樣；endpoint 模式不因未知 epoch 降級，但現行 ECT 缺成本模型或 CPU 命中時缺 restore model，仍維持明確 fallback。新 empirical 模型需另行實作與驗證。
 
 本次 live 工作已結束：2 次 render、4 次 inference、18 次 lookup、8 次 metrics、2 次 health，全為 HTTP 200；沒有仍執行中的請求。新增 JSON 不含 prompt 內容或 token IDs。

@@ -119,6 +119,8 @@ curl --fail-with-body --max-time 180 \
 
 Endpoint 模式略過成本模型的 fingerprint 比對，其餘版本、數值與範圍檢查仍保留。每台可以配置不同係數。程式不會自動從 `/metrics` 擬合係數；近似實驗需自行填入並標示估計版本，量測與校準方式見 [ECT 校準文件](docs/load_balancing/ect-calibration.md)、[CPU 還原模型](docs/load_balancing/lmcache-adapter.md#ect-restoration-model) 與 [現有資料可推估的項目](docs/load_balancing/ect-observable-inputs.md)。
 
+後續 [Cache-aware ECT 研究提案](docs/load_balancing/cache-aware-ect-design.md) 整理了 partial CPU prefix、GPU/CPU 重疊與 backend 背景 benchmark 的實測影響，建議直接學習 cache 與負載對完成時間的淨影響。提案尚未替換以上公式；目前 ledger 也不包含直接送往 backend 的外部流量。
+
 ```bash
 curl --fail http://127.0.0.1:29000/metrics \
   | rg 'router_routing_decisions_total|router_lmcache_observations_total'
