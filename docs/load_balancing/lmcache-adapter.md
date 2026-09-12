@@ -136,6 +136,12 @@ An `observed` acquisition alone does not mean the policy trusted that evidence.
 
 ## ECT restoration model
 
+This section describes the default `ect_model: "decomposed"` path. The new
+[`completion_time` mode](completion-time-routing.md) learns net cache benefit
+from per-attempt completion times and does not require a separate restore model.
+It uses the same raw CPU lookup evidence plus independently collected backend
+running/waiting and optional GPU KV pressure.
+
 Existing `cost_models` remain indexed by worker/instance ID. A CPU hit additionally
 requires a measured `restore_models` entry for that worker, with these fields:
 

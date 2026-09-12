@@ -1,0 +1,199 @@
+{
+  "started_at": "2026-09-12T06:02:08.732448+00:00",
+  "endpoint": "https://s9930703--vllm-serve-d-serve.modal.run",
+  "purpose": "single-worker real HTTP integration; synthetic model, not a routing benchmark or calibration",
+  "requests": [
+    {
+      "stream": false,
+      "status": 200,
+      "usage": {
+        "prompt_tokens": 609,
+        "total_tokens": 612,
+        "completion_tokens": 3,
+        "prompt_tokens_details": null,
+        "completion_tokens_details": null
+      },
+      "finish_reason": [
+        "stop"
+      ],
+      "client_elapsed_ms": 3378.555
+    },
+    {
+      "stream": true,
+      "status": 200,
+      "done": true,
+      "finish_reason": [
+        "stop"
+      ],
+      "usage": {
+        "prompt_tokens": 609,
+        "total_tokens": 612,
+        "completion_tokens": 3
+      },
+      "client_elapsed_ms": 2060.113
+    }
+  ],
+  "backend_gauges_before": [
+    "vllm:num_requests_running{engine=\"0\",model_name=\"local\"} 0.0",
+    "vllm:num_requests_waiting{engine=\"0\",model_name=\"local\"} 0.0",
+    "vllm:kv_cache_usage_perc{engine=\"0\",model_name=\"local\"} 0.0"
+  ],
+  "router_metrics": [
+    "router_dispatch_finished_total{success=\"true\"} 2",
+    "router_routing_decisions_total{policy=\"kv_batch_ect\",fallback=\"none\",identity_mode=\"endpoint\",ect_model=\"completion_time\"} 2",
+    "vllm_router_running_requests{worker=\"https://s9930703--vllm-serve-d-serve.modal.run\"} 0"
+  ],
+  "completion_samples": [
+    {
+      "attempt_id": "e5e48b74-7cf8-4ad4-ae11-8f8cf9bc9802",
+      "backend_running": 0,
+      "backend_sample_age_ms": 1535,
+      "backend_waiting": 0,
+      "cache_location": "LocalCPUBackend",
+      "cached_tokens": 0,
+      "completion_ms": 951.226166,
+      "fallback_reason": null,
+      "fingerprint": null,
+      "finish_reason": "stop",
+      "identity_mode": "endpoint",
+      "inflight": 0,
+      "kv_usage_fraction": 0.0,
+      "max_output_tokens": 8,
+      "model_kind": "completion_time",
+      "num_choices": 1,
+      "output_tokens": 3,
+      "policy": "kv_batch_ect",
+      "predicted_completion_ms": 1124.5,
+      "prompt_tokens": 609,
+      "request_id": "5576d235-dcac-4088-b817-d06635327619",
+      "reusable_tokens": 0,
+      "sample_id": "e5e48b74-7cf8-4ad4-ae11-8f8cf9bc9802",
+      "source": "measured",
+      "success": true,
+      "worker_id": "vllm-d",
+      "worker_url": "https://s9930703--vllm-serve-d-serve.modal.run"
+    },
+    {
+      "attempt_id": "91302673-4aca-4633-832a-c7106ceebeb4",
+      "backend_running": 0,
+      "backend_sample_age_ms": 674,
+      "backend_waiting": 0,
+      "cache_location": "LocalCPUBackend",
+      "cached_tokens": 609,
+      "completion_ms": 873.75275,
+      "fallback_reason": null,
+      "fingerprint": null,
+      "finish_reason": "stop",
+      "identity_mode": "endpoint",
+      "inflight": 0,
+      "kv_usage_fraction": 0.0,
+      "max_output_tokens": 8,
+      "model_kind": "completion_time",
+      "num_choices": 1,
+      "output_tokens": 3,
+      "policy": "kv_batch_ect",
+      "predicted_completion_ms": 941.8,
+      "prompt_tokens": 609,
+      "request_id": "b7db8d84-c19b-475e-9ade-6ac3bf1dcf61",
+      "reusable_tokens": 608,
+      "sample_id": "91302673-4aca-4633-832a-c7106ceebeb4",
+      "source": "measured",
+      "success": true,
+      "worker_id": "vllm-d",
+      "worker_url": "https://s9930703--vllm-serve-d-serve.modal.run"
+    }
+  ],
+  "decision_candidates": [
+    [
+      {
+        "worker_index": 0,
+        "inflight": 0,
+        "reusable_tokens": 0,
+        "ect_ms": 1124.5,
+        "cost": null,
+        "completion_cost": {
+          "calibration_version": "synthetic-live-integration-only",
+          "source": "synthetic",
+          "estimated_output_tokens": 8,
+          "cached_tokens": 0,
+          "router_inflight": 0,
+          "backend_running": 0,
+          "backend_waiting": 0,
+          "kv_usage_fraction": 0.0,
+          "cache_credit_ms": 0.0,
+          "backend_pressure_ms": 0.0,
+          "ect_ms": 1124.5
+        },
+        "backend_load": {
+          "running": 0,
+          "waiting": 0,
+          "kv_usage_fraction": 0.0,
+          "age_ms": 1535
+        },
+        "tie_rank": 0,
+        "evidence": {
+          "status": "lm_cache_observed",
+          "tokens": 0,
+          "cached_tokens": 0,
+          "instance_id": "vllm-d",
+          "location": "LocalCPUBackend",
+          "engine_epoch": null,
+          "age_ms": 1374
+        }
+      }
+    ],
+    [
+      {
+        "worker_index": 0,
+        "inflight": 0,
+        "reusable_tokens": 608,
+        "ect_ms": 941.8,
+        "cost": null,
+        "completion_cost": {
+          "calibration_version": "synthetic-live-integration-only",
+          "source": "synthetic",
+          "estimated_output_tokens": 8,
+          "cached_tokens": 609,
+          "router_inflight": 0,
+          "backend_running": 0,
+          "backend_waiting": 0,
+          "kv_usage_fraction": 0.0,
+          "cache_credit_ms": 182.7,
+          "backend_pressure_ms": 0.0,
+          "ect_ms": 941.8
+        },
+        "backend_load": {
+          "running": 0,
+          "waiting": 0,
+          "kv_usage_fraction": 0.0,
+          "age_ms": 674
+        },
+        "tie_rank": 0,
+        "evidence": {
+          "status": "lm_cache_observed",
+          "tokens": 608,
+          "cached_tokens": 609,
+          "instance_id": "vllm-d",
+          "location": "LocalCPUBackend",
+          "engine_epoch": null,
+          "age_ms": 582
+        }
+      }
+    ]
+  ],
+  "model_source": "synthetic",
+  "finished_at": "2026-09-12T06:02:20.547007+00:00",
+  "validation": {
+    "inference_requests": 2,
+    "successful_nonstream_and_stream": true,
+    "fallback_count": 0,
+    "completion_samples": 2,
+    "actual_output_tokens": [
+      3,
+      3
+    ],
+    "final_router_inflight": 0,
+    "model_calibrated": false,
+    "multiworker_performance_benchmark": false
+  }
+}

@@ -1,43 +1,50 @@
 # vLLM Router
 
-## 本 fork 新增的三個 KV routing policies
+## Three KV routing policies added by this fork
 
-三個 policy 都實作在 **Router**，共用 request tokenization、prefix 證據、in-flight ledger 與 retry／streaming lifecycle；只替換 worker 的排序規則。vLLM 提供推論與 telemetry，無須修改 scheduler。
+All three policies run in the **Router** and share request tokenization, prefix evidence, the in-flight ledger, and the retry/streaming lifecycle. They differ in worker ranking. vLLM provides inference and telemetry without scheduler changes.
 
-| CLI policy | 第一排序條件 | 第二排序條件 | 用途 |
+| CLI policy | Primary ordering | Secondary ordering | Purpose |
 | --- | --- | --- | --- |
-| `prefix_max` | 可重用 prefix `H_j` 最大 | in-flight `n_j` 最少 | 優先利用已有 cache 的 baseline |
-| `least_load_kv` | in-flight `n_j` 最少 | 可重用 prefix `H_j` 最大 | 優先平衡負載，平手時利用 cache |
-| `kv_batch_ect` | 預估完成時間 `E_j` 最小 | 固定 worker URL 順序 | 同時考慮 prefix、服務能力、負載與 cache 還原成本 |
+| `prefix_max` | Largest reusable prefix `H_j` | Fewest in-flight attempts `n_j` | Cache-first baseline |
+| `least_load_kv` | Fewest in-flight attempts `n_j` | Largest reusable prefix `H_j` | Load-first baseline with cache tie-breaking |
+| `kv_batch_ect` | Lowest estimated completion time `E_j` | Stable worker URL order | Cache-aware ECT using cache benefit, service capacity, and load |
 
-前兩個 policy 最後也以 worker URL 的字典順序處理平手，不套用 session affinity。`n_j` 是派送這筆請求**之前**，Router 記錄的未完成 attempt 數；選擇與 reservation 原子化執行，收到 HTTP 200 headers 不會提早釋放 streaming 負載。實驗流量應全部經過同一個 Router，backend running／waiting metrics 用於核對，不與 ledger 相加。
+The first two policies also break final ties by worker URL and do not apply session affinity. `n_j` counts this Router's unfinished attempts **before** dispatch. Selection and reservation are atomic; receiving HTTP 200 headers does not release a streaming reservation. Traffic sent directly to a backend is absent from this ledger. The new completion-time model reads backend running/waiting metrics separately to account for background traffic; it never adds those gauges to the ledger count.
 
-目前 LMCache adapter 使用各 controller `/lookup` 回報的 **`LocalCPUBackend` 可還原 prefix** 作為 `H_j`，並限制為完整 vLLM blocks、保留最後 prompt token 的計算。這個數字表示 CPU cache inventory，不代表 GPU 已駐留 KV。兩個 baseline 不需要時間係數或 hit rate，就可以依這份 prefix 證據排序。
+The LMCache adapter reads each controller's `/lookup` result as a **restorable `LocalCPUBackend` prefix**. It preserves the raw matched length `C_j`, including partial blocks, and derives `H_j` by rounding down to complete vLLM blocks while leaving the final prompt token to be computed. CPU inventory does not establish GPU KV residency. The two baselines need no timing coefficients or global hit rate.
 
-KV-Batch-ECT 的 CPU cache 成本模型如下，時間單位皆為毫秒：
+For new ECT deployments, use **`ect_model: "completion_time"`**. This mode predicts dispatch-to-terminal time directly, in milliseconds:
 
 ```text
-P_j = a0_j + a1_j × (L − H_j) + a2_j × (L² − H_j²)
-D_j = d0_j + d1_j × Ô + d2_j × L × Ô
-R_j = fixed_ms_j + per_token_ms_j × cached_tokens_j    # 有 CPU cache 時
-E_j = (P_j + D_j + R_j) × (1 + β_j × n_j) + Q_j
+E_j = intercept_ms
+    + prompt_token_ms × L
+    + output_token_ms × Ô
+    + prompt_output_token_ms × L × Ô
+    - cache_token_ms × C_j
+    + router_inflight_ms × n_j
+    + backend_running_ms × running_j
+    + backend_waiting_ms × waiting_j
+    + kv_usage_ms × kv_usage_fraction_j
 ```
 
-`L` 來自實際 renderer tokens；`Ô` 是輸出長度 prior，受 request 的輸出上限限制；`cached_tokens_j` 是 lookup 原始回報的 CPU prefix 長度。沒有 CPU 命中時 `R_j = 0`。目前模型保守計入整段 CPU prefix 的還原，尚未扣掉未知的 GPU 重疊部分。
+`L` comes from actual renderer tokens; `Ô` is an output-length prior capped by the request's output limit. Cache credit represents the modeled net benefit of CPU cache evidence, including GPU overlap and restoration effects. KV usage is capacity pressure, not a request-specific hit estimate. Coefficients must be fitted jointly because the load features overlap. **This mode does not require or add `restore_models`, a separate queue correction, or a batch multiplier.** Omitting `ect_model` keeps the original `decomposed` model for compatibility.
 
-只有 `kv_batch_ect` 會套用有界 session affinity：提供 `x-session-id` 後，最近成功使用的 home 必須仍可用、紀錄未過期、比最佳 worker 多至少一個 block 的 prefix，且 `E_home ≤ E_best + 0.015 × E_best + 10 ms`，才保留 home。`verified` 模式另要求 epoch 相同。
+Only `kv_batch_ect` applies bounded session affinity. With `x-session-id`, the last successful home must remain available, have an unexpired record, offer at least one more block of prefix than the best worker, and satisfy `E_home ≤ E_best + 0.015 × E_best + 10 ms`. Verified identity mode also requires the same engine epoch.
 
-任一可用候選的必要 prefix 資料缺失／過期，或 ECT 的成本模型缺失、無效、超出適用範圍時，**整次決策共同降級成 least-load**，並記錄原因。缺 telemetry 不會被當成已確認的零命中。
+If any available candidate lacks required prefix evidence or a valid, applicable ECT model, **the whole decision falls back to least-load** and records the reason. Missing telemetry is never treated as a confirmed zero hit or an idle backend. See the [completion-time usage guide](docs/load_balancing/completion-time-routing.md) and the [three-worker configuration](examples/configs/completion_time_routing.json).
 
-## Router 的 LMCache adapter 怎麼用
+## Using the Router's LMCache adapter
 
-Adapter 已內建於此 fork 的 Router，透過 `--routing-state-config` 啟用。它在每次 dispatch attempt 前並行查各 worker 的 controller，在鎖外完成 render／lookup，再以共用 snapshot 選路；不需要另外啟動 adapter 程序。每個 worker 的 controller 必須已部署，Router 不會替 backend 安裝 LMCache。
+The adapter is built into this fork and enabled with `--routing-state-config`. Before each dispatch attempt, it queries the configured controllers in parallel, performs render/lookup outside the selection lock, and routes from a shared snapshot. No separate adapter process is needed. Controllers must already be deployed; the Router does not install LMCache on workers.
 
-目前支援 regular HTTP routing、每個 endpoint 一個 engine（`--intra-node-data-parallel-size 1`），以及文字 `/v1/chat/completions`，包含文字 tool history 與 `chat_template_kwargs`。這三個 policy 尚不支援 PD／IGW 模式；LMCache adapter 對 Responses、Completions、多模態、LoRA 與 cache-salted requests 會明確降級。
+Supported deployments use regular HTTP routing, one engine per endpoint (`--intra-node-data-parallel-size 1`), and text `/v1/chat/completions`, including text tool history and `chat_template_kwargs`. These policies do not support PD/IGW mode. The LMCache adapter explicitly falls back for Responses, Completions, multimodal, LoRA, and cache-salted requests. The completion-time model currently supports one output choice per request.
 
-### 1. 建立 `routing.json`
+### 1. Create `routing.json`
 
-將以下 URL、instance ID、model alias 與 block size 換成部署值。`workers` 的 key 是 **推論 base URL**，必須對應 CLI 的 `--worker-urls`；`controller_url` 可與推論 URL 相同或不同。增加第三台時，在 `workers` 和 CLI 各加一筆，程式沒有寫死任何 Modal endpoint。
+For a complete three-worker ECT setup, start with [completion_time_routing.json](examples/configs/completion_time_routing.json). Its coefficients are labeled `synthetic` and demonstrate the schema; they are not measurements of any deployment. The smaller configuration below is sufficient for the two baselines.
+
+Replace URLs, instance IDs, the model alias, and block sizes with deployment values. Each `workers` key is an **inference base URL** matching `--worker-urls`; `controller_url` can be the same or a separate URL. To add workers, extend the config and CLI lists. No Modal endpoint is hard-coded.
 
 ```json
 {
@@ -67,11 +74,11 @@ Adapter 已內建於此 fork 的 Router，透過 `--routing-state-config` 啟用
 }
 ```
 
-`identity_mode: "endpoint"` 採用本輪實驗的假設：各台模型／tokenizer／serving 設定相同，每個 endpoint 固定對應一台 engine。缺少 fingerprint／epoch 不會阻擋選路；若重新部署或更換 URL 背後的 engine，重啟 Router 清掉舊 session 狀態。省略這個欄位會使用預設 `verified` 模式，要求已驗證的 fingerprint 與 engine 身分。
+`identity_mode: "endpoint"` adopts the experiment's deployment assumption: identical model/tokenizer/serving settings and one fixed engine behind each endpoint. Missing fingerprints or epochs do not block routing. Restart the Router after replacing an engine behind an existing URL to clear old session state. Omitting this field selects the default `verified` mode, which requires verified fingerprints and engine identities.
 
-`renderer_base_url` 只需選一個可用、設定相同的 vLLM renderer，adapter 會呼叫其 `POST /v1/chat/completions/render`。每個 controller 需要接受 `POST /lookup`（body 為 `{"tokens": [...]}`）與 `POST /health`（body 為 `{"instance_id": "worker-one"}`）。`block_size` 要填 vLLM 的實際 block size，與 LMCache chunk size 分開。上述 timeout 是暖機後的實驗設定，可依部署調整。
+`renderer_base_url` identifies one available vLLM renderer with matching settings; the adapter calls `POST /v1/chat/completions/render`. Each controller must accept `POST /lookup` with `{"tokens": [...]}` and `POST /health` with `{"instance_id": "worker-one"}`. Set `block_size` to the actual vLLM block size, separately from LMCache chunk size. Adjust the illustrated timeouts for your deployment.
 
-### 2. 從這個 fork 編譯並啟動
+### 2. Build and start this fork
 
 ```bash
 cargo build --release --bin vllm-router
@@ -90,11 +97,11 @@ export POLICY="prefix_max"
   --worker-startup-check-interval 1
 ```
 
-將 `POLICY` 改成 `least_load_kv` 或 `kv_batch_ect` 後，用同一指令重啟即可切換。這裡使用本 fork 編譯的 binary；從 PyPI 安裝的版本不保證包含這三個新增 policy。
+Change `POLICY` to `least_load_kv` or `kv_batch_ect` and restart with the same command to switch policies. Add every configured worker to `--worker-urls`, including the third worker when using the complete ECT example. Use the binary built from this fork; the PyPI release may not include these policies.
 
-`--health-check-endpoint /v1/models` 用於 inference 健康檢查；已測過的 Modal controller 入口將 `/health` 留給 POST，GET 會回 405，因此不能用預設的 GET `/health`。Telemetry 若需要驗證 header，可在 config 的 `header_env` 指定環境變數，詳見 [adapter 文件](docs/load_balancing/lmcache-adapter.md)。
+`--health-check-endpoint /v1/models` checks inference availability. The tested Modal controller endpoints reserve `/health` for POST and return 405 for GET, so the default GET `/health` is unsuitable. Configure telemetry authentication headers through environment variables in `header_env`; see the [adapter guide](docs/load_balancing/lmcache-adapter.md).
 
-### 3. 把推論請求送到 Router
+### 3. Send inference requests to the Router
 
 ```bash
 curl --fail-with-body --max-time 180 \
@@ -104,43 +111,43 @@ curl --fail-with-body --max-time 180 \
   -d '{"model":"local","messages":[{"role":"user","content":"hi"}],"max_tokens":64,"chat_template_kwargs":{"enable_thinking":false},"priority":0}'
 ```
 
-原始 JSON 與推論串流會經 Router 轉送。使用 OpenAI 相容 client 時，將 `base_url` 設成 `http://127.0.0.1:30000/v1`；上述 `enable_thinking` 設定適用於目前的 Qwen 部署。
+The Router forwards the original JSON and inference stream. For OpenAI-compatible clients, set `base_url` to `http://127.0.0.1:30000/v1`. The illustrated `enable_thinking` option applies to the current Qwen deployment.
 
-### 4. 啟用 ECT 排序與確認是否降級
+### 4. Enable Cache-aware ECT and inspect fallbacks
 
-上述最小 config 足以使用兩個 baseline。**只把 policy 名稱改成 `kv_batch_ect`，尚不會取得有效 ECT 分數**：還要在同一份 JSON 頂層加入以 `instance_id` 為 key 的 `cost_models`，CPU 命中時另需 `restore_models`。
+Changing the CLI policy alone does not provide usable ECT scores. For the new mode, add these top-level fields to the same JSON configuration:
 
-| Config 欄位 | 每台需要的內容 |
+| Field | Required configuration |
 | --- | --- |
-| `cost_models[instance_id]` | `fingerprint`、`calibration_version`、`prompt_range`、`output_range`、`concurrency_range`、`output_prior`、`prefill`、`decode`、`beta`、`queue_ms` |
-| `restore_models[instance_id]` | `fingerprint`、`calibration_version`、`location: "LocalCPUBackend"`、`token_range`、`fixed_ms`、`per_token_ms` |
+| `ect_model: "completion_time"` | Selects the direct completion-time model for all candidates |
+| `completion_models[instance_id]` | Per-worker coefficients, provenance, version, output prior, and supported feature ranges |
+| `backend_metrics` | Model name, inference URL → complete `/metrics` URL mapping, polling interval, timeout, and maximum sample age |
 
-`prefill` 填 `[a0, a1, a2]`，`decode` 填 `[d0, d1, d2]`；各 `*_range` 填包含端點的 `[min, max]`。成本係數須為有限、非負數，且 token 長度／併發量落在配置範圍內。
+Every candidate needs its own LMCache binding, metrics binding, and completion model. Models can differ by worker. The collector runs in the background with a separate HTTP pool; dispatch only reads local snapshots. Running/waiting gauges must match the configured model and one engine. KV usage is required when its model coefficient is positive. Missing or expired observations trigger the common fallback.
 
-Endpoint 模式略過成本模型的 fingerprint 比對，其餘版本、數值與範圍檢查仍保留。每台可以配置不同係數。程式不會自動從 `/metrics` 擬合係數；近似實驗需自行填入並標示估計版本，量測與校準方式見 [ECT 校準文件](docs/load_balancing/ect-calibration.md)、[CPU 還原模型](docs/load_balancing/lmcache-adapter.md#ect-restoration-model) 與 [現有資料可推估的項目](docs/load_balancing/ect-observable-inputs.md)。
+Model `source` must be `measured`, `estimated`, or `synthetic`. Estimated coefficients can support an explicitly labeled experiment; the Router does not automatically turn `/metrics` into a calibrated model. The [completion-time guide](docs/load_balancing/completion-time-routing.md) explains per-attempt sample logs, offline calibration, supported ranges, and validation. The [design notes](docs/load_balancing/cache-aware-ect-design.md) explain why partial CPU prefixes, GPU/CPU overlap, and background benchmarks motivated the change. Phase-based and reuse-history enhancements remain future work.
 
-後續 [Cache-aware ECT 研究提案](docs/load_balancing/cache-aware-ect-design.md) 整理了 partial CPU prefix、GPU/CPU 重疊與 backend 背景 benchmark 的實測影響，建議直接學習 cache 與負載對完成時間的淨影響。提案尚未替換以上公式；目前 ledger 也不包含直接送往 backend 的外部流量。
+Existing configs that omit `ect_model` retain the `decomposed` formula and its `cost_models` plus CPU-hit `restore_models` requirements. See [decomposed ECT calibration](docs/load_balancing/ect-calibration.md), [CPU restoration models](docs/load_balancing/lmcache-adapter.md#ect-restoration-model), and [observable inputs](docs/load_balancing/ect-observable-inputs.md). Endpoint identity mode skips fingerprint matching; version, numerical, and domain checks still apply.
 
 ```bash
 curl --fail http://127.0.0.1:29000/metrics \
   | rg 'router_routing_decisions_total|router_lmcache_observations_total'
 ```
 
-查看 `router_routing_decisions_total` 的 `policy`、`identity_mode` 與 `fallback` labels；`fallback="none"` 表示這次有使用指定的排序。常見降級原因包括 `render_failed`、`unknown_kv`、`stale_kv`、`missing_cost_model`、`missing_restore_model`。`router_lmcache_observations_total` 則記錄各 worker 的資料取得結果，單純 lookup 成功不代表 ECT 模型已齊備。
+Inspect the `policy`, `identity_mode`, `ect_model`, and `fallback` labels on `router_routing_decisions_total`. `fallback="none"` means the configured ranking was used. Common reasons include `render_failed`, `unknown_kv`, `stale_kv`, `missing_completion_model`, and `missing_backend_metrics`; legacy mode can also report `missing_cost_model` or `missing_restore_model`. `router_lmcache_observations_total` records collection outcomes. A successful lookup alone does not mean every ECT input is available.
 
-### 本機 smoke 與更多文件
+### Local smoke tests and further documentation
 
-安裝 Rust/Cargo 與 `uv` 後，可以用本機 fixtures 測三個 policy，不需 GPU 或線上 controller：
+With Rust/Cargo and `uv` installed, test all three policies using local fixtures without GPUs or live controllers:
 
 ```bash
 bash scripts/routing/smoke.sh
 
-# 固定的合成案例：依序選 G0、G2、G1，驗證三個排序的差異
+# Fixed synthetic case: select G0, G2, and G1 to distinguish the three rankings.
 cargo run --example routing_policy_demo
 ```
 
-完整設計與限制見 [Observed KV routing](docs/load_balancing/observed-kv.md)；資料契約與部署設定見 [LMCache adapter](docs/load_balancing/lmcache-adapter.md)。
-
+The new three-worker completion-time smoke also changes background load, KV pressure, and lookup inventory to verify that each affects routing, then checks the shared fallback when one worker's metrics fail. See [Observed KV routing](docs/load_balancing/observed-kv.md) for the shared design and limitations, and [LMCache adapter](docs/load_balancing/lmcache-adapter.md) for data contracts and deployment details.
 ---
 
 <p align="center">
