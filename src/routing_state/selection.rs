@@ -1,6 +1,8 @@
 //! Source-independent policy inputs. An adapter supplies observations; selection
 //! performs no tokenization, network access, load mutation, or cache mutation.
-use super::{config::RoutingConfig, features::RequestFeatures, PrefixEvidence, Ranking};
+use super::{
+    config::RoutingConfig, cost::CostEstimate, features::RequestFeatures, PrefixEvidence, Ranking,
+};
 use crate::policies;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -60,6 +62,7 @@ pub struct CandidateSnapshot {
     pub inflight: usize,
     pub reusable_tokens: usize,
     pub ect_ms: Option<f64>,
+    pub cost: Option<CostEstimate>,
     pub tie_rank: usize,
     pub evidence: PrefixEvidence,
 }
@@ -155,6 +158,7 @@ impl SelectionSnapshot {
                 inflight: worker.inflight,
                 reusable_tokens: reusable,
                 ect_ms: None,
+                cost: None,
                 tie_rank,
                 evidence,
             });
@@ -168,7 +172,7 @@ impl SelectionSnapshot {
                     .get(&meta.worker_id)
                     .ok_or("missing_cost_model")
                     .and_then(|model| {
-                        model.predict(
+                        model.estimate(
                             &meta.fingerprint,
                             features.tokens.as_ref().unwrap().len(),
                             candidate.reusable_tokens,
@@ -177,7 +181,10 @@ impl SelectionSnapshot {
                         )
                     });
                 match prediction {
-                    Ok((ect, _)) => candidate.ect_ms = Some(ect),
+                    Ok(estimate) => {
+                        candidate.ect_ms = Some(estimate.ect_ms);
+                        candidate.cost = Some(estimate);
+                    }
                     Err(reason) => {
                         fallback.get_or_insert(reason);
                     }

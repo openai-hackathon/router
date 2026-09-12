@@ -18,6 +18,18 @@ pub struct CostModel {
     pub queue_ms: f64,
 }
 
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct CostEstimate {
+    pub calibration_version: String,
+    pub uncached_tokens: usize,
+    pub estimated_output_tokens: usize,
+    pub prefill_ms: f64,
+    pub decode_ms: f64,
+    pub load_multiplier: f64,
+    pub queue_ms: f64,
+    pub ect_ms: f64,
+}
+
 impl CostModel {
     pub fn predict(
         &self,
@@ -27,6 +39,18 @@ impl CostModel {
         output_limit: Option<usize>,
         inflight: usize,
     ) -> Result<(f64, usize), &'static str> {
+        self.estimate(fingerprint, prompt, reusable, output_limit, inflight)
+            .map(|estimate| (estimate.ect_ms, estimate.estimated_output_tokens))
+    }
+
+    pub fn estimate(
+        &self,
+        fingerprint: &str,
+        prompt: usize,
+        reusable: usize,
+        output_limit: Option<usize>,
+        inflight: usize,
+    ) -> Result<CostEstimate, &'static str> {
         if self.fingerprint != fingerprint || self.calibration_version.is_empty() {
             return Err("incompatible_cost_model");
         }
@@ -57,10 +81,23 @@ impl CostModel {
         let prefill =
             self.prefill[0] + self.prefill[1] * (l - h) + self.prefill[2] * (l * l - h * h);
         let decode = self.decode[0] + self.decode[1] * o + self.decode[2] * l * o;
-        let ect = (prefill + decode) * (1.0 + self.beta * inflight as f64) + self.queue_ms;
-        if !ect.is_finite() || ect < 0.0 {
+        let load_multiplier = 1.0 + self.beta * inflight as f64;
+        let ect = (prefill + decode) * load_multiplier + self.queue_ms;
+        if [prefill, decode, load_multiplier, ect]
+            .iter()
+            .any(|value| !value.is_finite() || *value < 0.0)
+        {
             return Err("invalid_cost_prediction");
         }
-        Ok((ect, output))
+        Ok(CostEstimate {
+            calibration_version: self.calibration_version.clone(),
+            uncached_tokens: prompt - reusable,
+            estimated_output_tokens: output,
+            prefill_ms: prefill,
+            decode_ms: decode,
+            load_multiplier,
+            queue_ms: self.queue_ms,
+            ect_ms: ect,
+        })
     }
 }

@@ -55,6 +55,13 @@ fn original_scenario_computes_costs_and_selects_three_different_workers() {
             for (candidate, expected_ms) in decision.candidates.iter().zip([3060.0, 2860.0, 3500.0])
             {
                 assert!((candidate.ect_ms.unwrap() - expected_ms).abs() < 1e-9);
+                let estimate = candidate.cost.as_ref().unwrap();
+                assert_eq!(estimate.ect_ms, candidate.ect_ms.unwrap());
+                assert_eq!(estimate.uncached_tokens, 8192 - candidate.reusable_tokens);
+                assert_eq!(estimate.estimated_output_tokens, 128);
+                assert_eq!(estimate.decode_ms, 500.0);
+                assert_eq!(estimate.queue_ms, 0.0);
+                assert_eq!(estimate.calibration_version, "synthetic-test-only");
             }
         } else {
             assert!(decision.candidates.iter().all(|c| c.ect_ms.is_none()));

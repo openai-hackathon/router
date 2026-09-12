@@ -74,6 +74,7 @@ fn candidate(i: usize, h: usize, n: usize, ect: f64) -> CandidateSnapshot {
         inflight: n,
         reusable_tokens: h,
         ect_ms: Some(ect),
+        cost: None,
         tie_rank: i,
         evidence: PrefixEvidence::Unknown,
     }
