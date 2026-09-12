@@ -1,0 +1,142 @@
+{
+  "started_at": "2026-09-12T04:39:45.619647+00:00",
+  "config": {
+    "lmcache": {
+      "renderer_base_url": "https://s9930703--vllm-serve-c-serve.modal.run",
+      "model": "local",
+      "fingerprint": null,
+      "workers": {
+        "https://s9930703--vllm-serve-c-serve.modal.run": {
+          "controller_url": "https://s9930703--vllm-serve-c-serve.modal.run",
+          "instance_id": "vllm-c",
+          "block_size": 16,
+          "fingerprint": null
+        },
+        "https://s9930703--vllm-serve-d-serve.modal.run": {
+          "controller_url": "https://s9930703--vllm-serve-d-serve.modal.run",
+          "instance_id": "vllm-d",
+          "block_size": 16,
+          "fingerprint": null
+        }
+      }
+    },
+    "telemetry_timeout_ms": 10000,
+    "render_timeout_ms": 10000,
+    "max_evidence_age_ms": 20000
+  },
+  "health_check_endpoint": "/v1/models",
+  "policies": {
+    "least_load_kv": {
+      "responses": [
+        {
+          "status": 200,
+          "usage": {
+            "prompt_tokens": 1047,
+            "total_tokens": 1055,
+            "completion_tokens": 8,
+            "prompt_tokens_details": null,
+            "completion_tokens_details": null
+          },
+          "returned_prompt_tokens": 1047
+        },
+        {
+          "status": 200,
+          "usage": {
+            "prompt_tokens": 1047,
+            "total_tokens": 1055,
+            "completion_tokens": 8,
+            "prompt_tokens_details": null,
+            "completion_tokens_details": null
+          },
+          "returned_prompt_tokens": 1047
+        }
+      ],
+      "metrics": [
+        "router_routing_decisions_total{policy=\"least_load_kv\",fallback=\"missing_serving_fingerprint\"} 2",
+        "router_lmcache_observations_total{worker=\"https://s9930703--vllm-serve-d-serve.modal.run\",result=\"observed\"} 2",
+        "router_lmcache_observations_total{worker=\"https://s9930703--vllm-serve-c-serve.modal.run\",result=\"observed\"} 2",
+        "vllm_router_running_requests{worker=\"https://s9930703--vllm-serve-d-serve.modal.run\"} 0",
+        "vllm_router_running_requests{worker=\"https://s9930703--vllm-serve-c-serve.modal.run\"} 0"
+      ],
+      "decisions": [
+        "2026-09-12 04:39:50  INFO vllm_router_rs::routing_state: src/routing_state/mod.rs:237: routing decision request_id=be96c571-1c12-40ae-989a-efde55dbda3e policy=\"least_load_kv\" fallback_reason=\"missing_serving_fingerprint\" prompt_tokens=1047 output_limit=8 candidates=[{\"worker_index\":1,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":0,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":0,\"cached_tokens\":0,\"instance_id\":\"vllm-c\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1149}},{\"worker_index\":0,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":1,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":0,\"cached_tokens\":0,\"instance_id\":\"vllm-d\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1149}}] chosen_worker=\"https://s9930703--vllm-serve-c-serve.modal.run\" affinity=false",
+        "2026-09-12 04:39:50  INFO vllm_router_rs::routing_state: src/routing_state/mod.rs:237: routing decision request_id=13de7160-fdc1-4f80-a959-39b514578877 policy=\"least_load_kv\" fallback_reason=\"missing_serving_fingerprint\" prompt_tokens=1047 output_limit=8 candidates=[{\"worker_index\":1,\"inflight\":1,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":0,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":0,\"cached_tokens\":0,\"instance_id\":\"vllm-c\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1241}},{\"worker_index\":0,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":1,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":0,\"cached_tokens\":0,\"instance_id\":\"vllm-d\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1242}}] chosen_worker=\"https://s9930703--vllm-serve-d-serve.modal.run\" affinity=false"
+      ]
+    },
+    "prefix_max": {
+      "responses": [
+        {
+          "status": 200,
+          "usage": {
+            "prompt_tokens": 1047,
+            "total_tokens": 1055,
+            "completion_tokens": 8,
+            "prompt_tokens_details": null,
+            "completion_tokens_details": null
+          },
+          "returned_prompt_tokens": 1047
+        },
+        {
+          "status": 200,
+          "usage": {
+            "prompt_tokens": 1047,
+            "total_tokens": 1055,
+            "completion_tokens": 8,
+            "prompt_tokens_details": null,
+            "completion_tokens_details": null
+          },
+          "returned_prompt_tokens": 1047
+        }
+      ],
+      "metrics": [
+        "router_lmcache_observations_total{worker=\"https://s9930703--vllm-serve-d-serve.modal.run\",result=\"observed\"} 2",
+        "router_lmcache_observations_total{worker=\"https://s9930703--vllm-serve-c-serve.modal.run\",result=\"observed\"} 2",
+        "router_routing_decisions_total{policy=\"prefix_max\",fallback=\"missing_serving_fingerprint\"} 2",
+        "vllm_router_running_requests{worker=\"https://s9930703--vllm-serve-d-serve.modal.run\"} 0",
+        "vllm_router_running_requests{worker=\"https://s9930703--vllm-serve-c-serve.modal.run\"} 0"
+      ],
+      "decisions": [
+        "2026-09-12 04:39:55  INFO vllm_router_rs::routing_state: src/routing_state/mod.rs:237: routing decision request_id=27e6cb84-06ce-4067-8886-0a2202568ea4 policy=\"prefix_max\" fallback_reason=\"missing_serving_fingerprint\" prompt_tokens=1047 output_limit=8 candidates=[{\"worker_index\":0,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":0,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":1024,\"cached_tokens\":1024,\"instance_id\":\"vllm-c\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1126}},{\"worker_index\":1,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":1,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":1024,\"cached_tokens\":1024,\"instance_id\":\"vllm-d\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1121}}] chosen_worker=\"https://s9930703--vllm-serve-c-serve.modal.run\" affinity=false",
+        "2026-09-12 04:39:55  INFO vllm_router_rs::routing_state: src/routing_state/mod.rs:237: routing decision request_id=b7d6a2ae-dfe9-43ab-9815-8e2f72abcf58 policy=\"prefix_max\" fallback_reason=\"missing_serving_fingerprint\" prompt_tokens=1047 output_limit=8 candidates=[{\"worker_index\":0,\"inflight\":1,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":0,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":1024,\"cached_tokens\":1024,\"instance_id\":\"vllm-c\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1178}},{\"worker_index\":1,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":1,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":1024,\"cached_tokens\":1024,\"instance_id\":\"vllm-d\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1176}}] chosen_worker=\"https://s9930703--vllm-serve-d-serve.modal.run\" affinity=false"
+      ]
+    },
+    "kv_batch_ect": {
+      "responses": [
+        {
+          "status": 200,
+          "usage": {
+            "prompt_tokens": 1047,
+            "total_tokens": 1055,
+            "completion_tokens": 8,
+            "prompt_tokens_details": null,
+            "completion_tokens_details": null
+          },
+          "returned_prompt_tokens": 1047
+        },
+        {
+          "status": 200,
+          "usage": {
+            "prompt_tokens": 1047,
+            "total_tokens": 1055,
+            "completion_tokens": 8,
+            "prompt_tokens_details": null,
+            "completion_tokens_details": null
+          },
+          "returned_prompt_tokens": 1047
+        }
+      ],
+      "metrics": [
+        "router_lmcache_observations_total{worker=\"https://s9930703--vllm-serve-c-serve.modal.run\",result=\"observed\"} 2",
+        "router_lmcache_observations_total{worker=\"https://s9930703--vllm-serve-d-serve.modal.run\",result=\"observed\"} 2",
+        "router_routing_decisions_total{policy=\"kv_batch_ect\",fallback=\"missing_serving_fingerprint\"} 2",
+        "vllm_router_running_requests{worker=\"https://s9930703--vllm-serve-c-serve.modal.run\"} 0",
+        "vllm_router_running_requests{worker=\"https://s9930703--vllm-serve-d-serve.modal.run\"} 0"
+      ],
+      "decisions": [
+        "2026-09-12 04:40:00  INFO vllm_router_rs::routing_state: src/routing_state/mod.rs:237: routing decision request_id=b1359976-2f8a-451e-b35b-797a277bf468 policy=\"kv_batch_ect\" fallback_reason=\"missing_serving_fingerprint\" prompt_tokens=1047 output_limit=8 candidates=[{\"worker_index\":1,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":0,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":1024,\"cached_tokens\":1024,\"instance_id\":\"vllm-c\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1237}},{\"worker_index\":0,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":1,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":1024,\"cached_tokens\":1024,\"instance_id\":\"vllm-d\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1238}}] chosen_worker=\"https://s9930703--vllm-serve-c-serve.modal.run\" affinity=false",
+        "2026-09-12 04:40:00  INFO vllm_router_rs::routing_state: src/routing_state/mod.rs:237: routing decision request_id=461a028f-ce4f-4d18-bdfc-2dcb4f374d54 policy=\"kv_batch_ect\" fallback_reason=\"missing_serving_fingerprint\" prompt_tokens=1047 output_limit=8 candidates=[{\"worker_index\":1,\"inflight\":1,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":0,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":1024,\"cached_tokens\":1024,\"instance_id\":\"vllm-c\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1300}},{\"worker_index\":0,\"inflight\":0,\"reusable_tokens\":0,\"ect_ms\":null,\"cost\":null,\"tie_rank\":1,\"evidence\":{\"status\":\"lm_cache_observed\",\"tokens\":1024,\"cached_tokens\":1024,\"instance_id\":\"vllm-d\",\"location\":\"LocalCPUBackend\",\"engine_epoch\":null,\"age_ms\":1300}}] chosen_worker=\"https://s9930703--vllm-serve-d-serve.modal.run\" affinity=false"
+      ]
+    }
+  },
+  "finished_at": "2026-09-12T04:40:01.872543+00:00"
+}

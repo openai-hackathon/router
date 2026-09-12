@@ -68,11 +68,11 @@ avoid losing the exact boundary through floating-point multiplication by 1.015.
 For example, a home at 2040 ms is allowed when the best is 2000 ms; 2040.001 ms
 is rejected, assuming the prefix/epoch/session conditions also pass.
 
-No LMCache HTTP adapter or fictional Controller endpoint is added by this
-offline path. The current `Observed` prefix contract represents GPU-reusable
-full blocks. A future LMCache adapter must preserve cache tier, establish
-identity/freshness and account for restoration costs before CPU or remote
-matches can participate in ECT as valid cache evidence.
+The optional [LMCache adapter](lmcache-adapter.md) consumes each configured
+controller's lookup/health APIs before reservation. Native `Observed` evidence
+represents GPU-reusable blocks; `LmCacheObserved` retains CPU tier, stored prefix
+and the usable prefix cap separately. Identity/freshness and restoration-cost
+checks remain shared with the selectors. The offline suite covers both sources.
 
 ## What the live deployment provides, and what ECT still needs
 
@@ -94,12 +94,12 @@ is 4096 and the sampled running/waiting counts were both zero.
 | Input | What we obtained | Remaining work |
 | --- | --- | --- |
 | Prompt tokens, `L` | `/v1/chat/completions/render`; exact parity with inference `return_token_ids` on a, b and c: 17 tokens for plain chat, 193 for tool history | Expand golden cases for production traffic; implement and verify a Responses adapter |
-| Request-specific cache prefix | c's `POST /lookup` now reports `vllm-c: [LocalCPUBackend, matched_tokens]`; six-request warm/repeat test below | Add a tier-aware LMCache adapter; CPU observations cannot be used as GPU-resident `H_j` without modeling restoration. a/b controllers are still being started |
+| Request-specific cache prefix | c/d each report their own `LocalCPUBackend` prefix through `/lookup`; adapter accepts explicit per-worker configuration | Verify engine identity/fingerprint and calibrate restoration before enabling trusted CPU-based ECT. a/b controllers are still being started |
 | Event integrity | No native KV event/snapshot stream has been verified on this deployment; lookup has no sequence/epoch/freshness fields | Verify eviction/restart invalidation and observation freshness, or supply sequence/replay and a complete snapshot; fail closed on gaps |
 | Worker identity | Metrics label `engine="0"`; lookup identifies `vllm-c`, but inference returns neither routing identity header | A stable worker ID plus restart epoch; bind telemetry and inference to the same supervised engine |
 | Serving compatibility | `/version`, `/v1/models`: vLLM version, model root, served alias; a reports max context 4096 | Pin model/tokenizer revisions, tokenizer/template digest, block size, hash algorithm, cache groups, dtype, TP/DP and serving settings in a deployment fingerprint |
 | Running/waiting/cache occupancy | `/metrics` exposes all three; `/load` returns `server_load` | Use to audit the Router ledger; do not add these values to ledger in-flight counts |
-| Per-request service times | Current inference `metrics` is null; `/metrics` has aggregate histograms | Enable `--enable-per-request-metrics` and collect timing samples by `L`, actual cached tokens, output tokens and Router concurrency |
+| Per-request service times | Inference `metrics` is null, but isolated c/d histogram-delta windows yielded prefill/decode/queue times with count increments of one | Collect enough verified windows across `L/H/O/n`; [observable-input analysis](ect-observable-inputs.md) gives conditions and limitations |
 | Actual cache use during execution | Current `usage.prompt_tokens_details` is null; cumulative cache hits exist | Enable the deployed version's prompt-token-details reporting or another attributable measurement for cache-hit validation; cumulative hits do not predict cache locality before dispatch |
 | Output prior and ECT coefficients | No calibration supplied | Fit in Router tooling from measured requests; vLLM does not need to return predicted output length, beta, or queue correction |
 
@@ -417,9 +417,9 @@ layouts, counter snapshots and token-parity results, without prompts/token IDs.
 Inference `metrics` and `usage.prompt_tokens_details` were null, and both
 `x-routing-worker-id` and `x-routing-engine-epoch` were absent in all six
 responses. Engine identity/epoch, eviction/restart handling, CPU restoration
-cost and measured ECT calibration still need verification. The Router's live
-collector still expects the native bridge contract; no LMCache adapter is
-connected yet.
+cost and measured ECT calibration still need verification. The subsequently
+added [configurable adapter](lmcache-adapter.md) can ingest these observations;
+unverified evidence continues to trigger explicit least-load fallback.
 
 Repeat the read-only test against its explicit URL:
 
