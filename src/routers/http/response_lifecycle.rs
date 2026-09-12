@@ -11,7 +11,7 @@ struct TerminalEvents {
 }
 
 impl TerminalEvents {
-    fn feed(&mut self, bytes: &[u8]) -> Option<bool> {
+    fn feed(&mut self, bytes: &[u8], mut observe: impl FnMut(&serde_json::Value)) -> Option<bool> {
         let mut terminal = None;
         for &byte in bytes {
             if byte != b'\n' {
@@ -31,6 +31,7 @@ impl TerminalEvents {
                     if data == b"[DONE]" {
                         terminal.get_or_insert(true);
                     } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                        observe(&value);
                         if value.get("error").is_some() {
                             terminal = Some(false);
                         }
@@ -77,6 +78,9 @@ pub async fn forward(
     if !stream || !status.is_success() {
         return match response.bytes().await {
             Ok(bytes) => {
+                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    reservation.observe_response_usage(&value);
+                }
                 if !background || !status.is_success() {
                     reservation.finish(status.is_success());
                 }
@@ -106,7 +110,9 @@ pub async fn forward(
             match stream.next().await {
                 Some(Ok(bytes)) => {
                     if sse {
-                        if let Some(success) = events.feed(&bytes) {
+                        if let Some(success) =
+                            events.feed(&bytes, |value| reservation.observe_response_usage(value))
+                        {
                             reservation.finish(success);
                         }
                     }
@@ -200,10 +206,13 @@ mod tests {
 
     #[tokio::test]
     async fn truncated_and_dropped_streams_stay_unknown() {
+        let (subscriber, samples) = crate::core::dispatch::tests::capture_samples();
+        let _subscriber = tracing::subscriber::set_default(subscriber);
         for consume in [true, false] {
             let (backend, task) =
                 backend("data: {}\n\n", "text/event-stream", http::StatusCode::OK).await;
-            let (ledger, reservation) = reserve();
+            let (ledger, mut reservation) = reserve();
+            reservation.set_sample_context(serde_json::json!({"worker_id": "worker"}));
             let worker = reservation.worker.clone();
             let response = forward(backend, reservation, true, false).await;
             if consume {
@@ -217,6 +226,7 @@ mod tests {
             assert_eq!(ledger.unknown_count("worker"), 1);
             task.abort();
         }
+        assert!(samples.lock().is_empty());
     }
 
     #[tokio::test]
@@ -234,6 +244,95 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn nonstream_sample_waits_for_body_and_records_actual_usage() {
+        use std::{convert::Infallible, sync::Arc, time::Duration};
+        let (subscriber, samples) = crate::core::dispatch::tests::capture_samples();
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server_gate = gate.clone();
+        let app = axum::Router::new().route(
+            "/",
+            axum::routing::get(move || {
+                let gate = server_gate.clone();
+                async move {
+                    let body = futures_util::stream::iter([Ok::<_, Infallible>(
+                        "{\"usage\":",
+                    )])
+                    .chain(futures_util::stream::once(async move {
+                        gate.notified().await;
+                        Ok("{\"completion_tokens\":9},\"choices\":[{\"finish_reason\":\"stop\"}]}")
+                    }));
+                    Body::from_stream(body)
+                }
+            }),
+        );
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let (_, mut reservation) = reserve();
+        reservation.set_sample_context(serde_json::json!({"worker_id": "worker"}));
+        let started = std::time::Instant::now();
+        let backend = reqwest::get(format!("http://{address}/")).await.unwrap();
+        let headers_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert!(samples.lock().is_empty());
+        let worker = reservation.worker.clone();
+        assert_eq!(worker.load(), 1);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            gate.notify_one();
+        });
+        let response = forward(backend, reservation, false, false).await;
+        let body = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()["usage"]
+                ["completion_tokens"],
+            9
+        );
+        let samples = samples.lock();
+        assert_eq!(samples.len(), 1);
+        assert!(samples[0]["completion_ms"].as_f64().unwrap() >= headers_ms + 20.0);
+        assert_eq!(samples[0]["output_tokens"], 9);
+        assert_eq!(samples[0]["finish_reason"], "stop");
+        assert_eq!(worker.load(), 0);
+        task.abort();
+    }
+
+    #[test]
+    fn fragmented_usage_events_are_captured_before_a_single_terminal_sample() {
+        let (subscriber, samples) = crate::core::dispatch::tests::capture_samples();
+        let _subscriber = tracing::subscriber::set_default(subscriber);
+        let event = concat!(
+            "data: {\"choices\":[{\"finish_reason\":\"length\"}]}\n\n",
+            "data: {\"usage\":{\"completion_tokens\":32},\"choices\":[]}\n\n",
+            "data: [DONE]\n\n",
+        );
+        for cut in 0..event.len() {
+            let (_, mut reservation) = reserve();
+            reservation.set_sample_context(serde_json::json!({"worker_id": "worker"}));
+            let mut scanner = TerminalEvents::default();
+            assert_eq!(
+                scanner.feed(&event.as_bytes()[..cut], |value| reservation
+                    .observe_response_usage(value)),
+                None,
+            );
+            assert_eq!(samples.lock().len(), cut);
+            let terminal = scanner.feed(&event.as_bytes()[cut..], |value| {
+                reservation.observe_response_usage(value)
+            });
+            reservation.finish(terminal.unwrap());
+            reservation.finish(true);
+            let samples = samples.lock();
+            assert_eq!(samples.len(), cut + 1);
+            assert_eq!(samples[cut]["output_tokens"], 32);
+            assert_eq!(samples[cut]["finish_reason"], "length");
+        }
+    }
+
     #[test]
     fn terminal_events_survive_every_chunk_boundary() {
         for event in [
@@ -242,15 +341,18 @@ mod tests {
         ] {
             for cut in 0..event.len() {
                 let mut scanner = TerminalEvents::default();
-                assert_eq!(scanner.feed(&event.as_bytes()[..cut]), None);
-                assert_eq!(scanner.feed(&event.as_bytes()[cut..]), Some(true));
+                assert_eq!(scanner.feed(&event.as_bytes()[..cut], |_| {}), None);
+                assert_eq!(scanner.feed(&event.as_bytes()[cut..], |_| {}), Some(true));
             }
         }
     }
     #[test]
     fn content_is_not_a_terminal_event() {
         let mut scanner = TerminalEvents::default();
-        assert_eq!(scanner.feed(b"data: {\"text\":\"data: [DONE]\"}\n\n"), None);
-        assert_eq!(scanner.feed(b"data: [DONE]"), None);
+        assert_eq!(
+            scanner.feed(b"data: {\"text\":\"data: [DONE]\"}\n\n", |_| {}),
+            None
+        );
+        assert_eq!(scanner.feed(b"data: [DONE]", |_| {}), None);
     }
 }
