@@ -4,6 +4,7 @@ pub mod config;
 pub mod cost;
 pub mod features;
 pub mod kv;
+pub mod lmcache;
 pub mod selection;
 pub mod telemetry;
 
@@ -53,6 +54,15 @@ pub enum PrefixEvidence {
         sequence: Option<u64>,
         age_ms: u64,
     },
+    /// Controller placement is restorable cache, not a GPU-resident KV claim.
+    LmCacheObserved {
+        tokens: usize,
+        cached_tokens: usize,
+        instance_id: String,
+        location: String,
+        engine_epoch: Option<String>,
+        age_ms: u64,
+    },
     Unknown,
     Stale,
     Unsupported,
@@ -67,6 +77,8 @@ struct Home {
 #[derive(Debug, Default)]
 struct State {
     workers: HashMap<String, WorkerTelemetry>,
+    controller_metadata: HashMap<String, WorkerMetadata>,
+    controller_observed_at: HashMap<String, Instant>,
     sessions: HashMap<(String, String), Home>,
     identity_mismatches: HashMap<String, String>,
 }
@@ -189,9 +201,38 @@ impl SharedRoutingState {
         ranking: Ranking,
         features: &RequestFeatures,
     ) -> Option<usize> {
-        let decision = self
-            .snapshot(workers, features)
-            .decide(ranking, features, &self.config)?;
+        self.select_with_observations(workers, ranking, features, None)
+    }
+
+    fn select_with_observations(
+        &self,
+        workers: &[Arc<dyn Worker>],
+        ranking: Ranking,
+        features: &RequestFeatures,
+        observations: Option<&lmcache::Observations>,
+    ) -> Option<usize> {
+        let mut snapshot = self.snapshot(workers, features);
+        if let Some(observations) = observations {
+            let state = self.state.lock();
+            for worker in &mut snapshot.workers {
+                let observation = observations.get(&worker.worker_url);
+                worker.metadata = observation.map(|o| o.metadata.clone());
+                worker.evidence = observation.map_or(PrefixEvidence::Unknown, |o| {
+                    if state.identity_mismatches.get(&worker.worker_url)
+                        == Some(&o.metadata.engine_epoch)
+                        || state
+                            .controller_metadata
+                            .get(&worker.worker_url)
+                            .is_some_and(|m| m.engine_epoch != o.metadata.engine_epoch)
+                    {
+                        PrefixEvidence::Stale
+                    } else {
+                        o.evidence()
+                    }
+                });
+            }
+        }
+        let decision = snapshot.decide(ranking, features, &self.config)?;
         metrics::counter!("router_routing_decisions_total", "policy" => ranking.name(), "fallback" => decision.fallback_reason.unwrap_or("none")).increment(1);
         tracing::info!(request_id = %features.request_id, policy = ranking.name(), fallback_reason = decision.fallback_reason,
             prompt_tokens = features.tokens.as_ref().map(Vec::len), output_limit = features.output_limit,
@@ -207,18 +248,62 @@ impl SharedRoutingState {
         text: Option<&str>,
         headers: Option<&RequestHeaders>,
     ) -> Option<Reservation> {
+        self.reserve_with_observations(workers, policy, features, text, headers, None)
+    }
+
+    pub fn reserve_with_observations(
+        self: &Arc<Self>,
+        workers: &[Arc<dyn Worker>],
+        policy: Arc<dyn LoadBalancingPolicy>,
+        features: &RequestFeatures,
+        text: Option<&str>,
+        headers: Option<&RequestHeaders>,
+        observations: Option<&lmcache::Observations>,
+    ) -> Option<Reservation> {
+        if let Some(observations) = observations {
+            for (url, observation) in observations {
+                let meta = &observation.metadata;
+                if !meta.engine_epoch.is_empty() {
+                    // Concurrent HTTP lookups can arrive out of order. They
+                    // cannot prove old inference attempts have terminated, so
+                    // do not use them to release unknown ledger entries.
+                    let mut state = self.state.lock();
+                    if state
+                        .controller_observed_at
+                        .get(url)
+                        .is_some_and(|time| *time >= observation.started)
+                    {
+                        continue;
+                    }
+                    if state.identity_mismatches.get(url) != Some(&meta.engine_epoch) {
+                        state.identity_mismatches.remove(url);
+                    }
+                    state.controller_metadata.insert(url.clone(), meta.clone());
+                    state
+                        .controller_observed_at
+                        .insert(url.clone(), observation.started);
+                }
+            }
+        }
         let mut reservation = self
             .ledger
             .select_and_reserve(workers, policy.clone(), || match policy.ranking() {
-                Some(ranking) => self.select(workers, ranking, features),
+                Some(ranking) => {
+                    self.select_with_observations(workers, ranking, features, observations)
+                }
                 None => policy.select_worker_with_headers(workers, text, headers),
             })?;
-        let epoch = self
-            .state
-            .lock()
-            .workers
-            .get(reservation.worker.url())
-            .map(|t| t.info.engine_epoch.clone());
+        let epoch = observations
+            .and_then(|o| o.get(reservation.worker.url()))
+            .map(|o| o.metadata.engine_epoch.clone())
+            .filter(|epoch| !epoch.is_empty())
+            .or_else(|| {
+                self.state
+                    .lock()
+                    .workers
+                    .get(reservation.worker.url())
+                    .map(|t| t.info.engine_epoch.clone())
+            });
         if let Some(epoch) = epoch {
             reservation.set_epoch(epoch.clone());
             if let (Some(session), Some(fingerprint)) =
@@ -229,11 +314,15 @@ impl SharedRoutingState {
                 reservation.on_success(move || {
                     if let Some(shared) = weak.upgrade() {
                         let mut state = shared.state.lock();
-                        if state
+                        let current = state
                             .workers
                             .get(&url)
-                            .is_none_or(|w| w.info.engine_epoch != epoch || !w.synced)
-                        {
+                            .is_some_and(|w| w.info.engine_epoch == epoch && w.synced)
+                            || state
+                                .controller_metadata
+                                .get(&url)
+                                .is_some_and(|m| m.engine_epoch == epoch);
+                        if !current || state.identity_mismatches.get(&url) == Some(&epoch) {
                             return;
                         }
                         state.sessions.retain(|_, home| {
@@ -267,18 +356,28 @@ impl SharedRoutingState {
 
     pub fn validate_response_identity(&self, url: &str, headers: &http::HeaderMap) -> bool {
         let state = self.state.lock();
-        let Some(worker) = state.workers.get(url) else {
+        let identity = state
+            .workers
+            .get(url)
+            .map(|w| (&w.info.worker_id, &w.info.engine_epoch))
+            .or_else(|| {
+                state
+                    .controller_metadata
+                    .get(url)
+                    .map(|m| (&m.worker_id, &m.engine_epoch))
+            });
+        let Some((worker_id, engine_epoch)) = identity else {
             return true;
         };
         let matches = headers
             .get("x-routing-worker-id")
             .and_then(|v| v.to_str().ok())
-            == Some(worker.info.worker_id.as_str())
+            == Some(worker_id.as_str())
             && headers
                 .get("x-routing-engine-epoch")
                 .and_then(|v| v.to_str().ok())
-                == Some(worker.info.engine_epoch.as_str());
-        let epoch = worker.info.engine_epoch.clone();
+                == Some(engine_epoch.as_str());
+        let epoch = engine_epoch.clone();
         drop(state);
         if !matches {
             self.invalidate(url);

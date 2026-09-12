@@ -1,4 +1,7 @@
-use super::cost::CostModel;
+use super::{
+    cost::{CostModel, RestoreCostModel},
+    lmcache::LmCacheConfig,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -17,6 +20,8 @@ pub struct RoutingConfig {
     pub max_sessions: usize,
     pub max_blocks_per_worker: usize,
     pub cost_models: HashMap<String, CostModel>,
+    pub restore_models: HashMap<String, RestoreCostModel>,
+    pub lmcache: Option<LmCacheConfig>,
 }
 
 impl Default for RoutingConfig {
@@ -32,6 +37,8 @@ impl Default for RoutingConfig {
             max_sessions: 10000,
             max_blocks_per_worker: 1_000_000,
             cost_models: HashMap::new(),
+            restore_models: HashMap::new(),
+            lmcache: None,
         }
     }
 }
@@ -55,6 +62,14 @@ impl RoutingConfig {
             return Err("routing config limits and intervals must be positive".into());
         }
         config.headers()?;
+        if let Some(lmcache) = &config.lmcache {
+            lmcache.validate()?;
+            if config.renderer_url.is_some() {
+                return Err(
+                    "configure either the native renderer or lmcache.renderer_base_url".into(),
+                );
+            }
+        }
         Ok(config)
     }
 

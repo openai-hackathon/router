@@ -236,6 +236,72 @@ fn measured_cost_model_checks_inputs_and_domain() {
         Err("invalid_cost_prediction")
     );
 }
+
+#[test]
+fn late_controller_replies_do_not_replace_new_identity_or_release_unknown_attempts() {
+    let state = Arc::new(SharedRoutingState::new(
+        config::RoutingConfig::default(),
+        Arc::new(DispatchLedger::default()),
+    ));
+    let workers = vec![workers()[0].clone()];
+    let policy: Arc<dyn policies::LoadBalancingPolicy> =
+        Arc::new(ObservedPolicy(Ranking::PrefixMax));
+    let make = |epoch: &str, started| lmcache::Observation {
+        metadata: WorkerMetadata {
+            worker_id: "g0".into(),
+            model: "local".into(),
+            fingerprint: "f".into(),
+            engine_epoch: epoch.into(),
+            block_size: 2,
+        },
+        evidence: PrefixEvidence::LmCacheObserved {
+            tokens: 2,
+            cached_tokens: 2,
+            instance_id: "g0".into(),
+            location: "LocalCPUBackend".into(),
+            engine_epoch: Some(epoch.into()),
+            age_ms: 0,
+        },
+        started,
+    };
+    let started = Instant::now();
+    let old = HashMap::from([(workers[0].url().to_owned(), make("old", started))]);
+    let new = HashMap::from([(
+        workers[0].url().to_owned(),
+        make("new", started + Duration::from_millis(1)),
+    )]);
+    let mut request = state
+        .reserve_with_observations(
+            &workers,
+            policy.clone(),
+            &features(),
+            None,
+            None,
+            Some(&old),
+        )
+        .unwrap();
+    request.dispatched();
+    drop(request);
+    for observations in [&new, &old] {
+        let mut attempt = state
+            .reserve_with_observations(
+                &workers,
+                policy.clone(),
+                &features(),
+                None,
+                None,
+                Some(observations),
+            )
+            .unwrap();
+        attempt.finish(false);
+        assert_eq!(state.ledger.unknown_count(workers[0].url()), 1);
+        assert_eq!(workers[0].load(), 1);
+        assert_eq!(
+            state.state.lock().controller_metadata[workers[0].url()].engine_epoch,
+            "new"
+        );
+    }
+}
 #[test]
 fn session_home_requires_success_epoch_and_bounded_cost() {
     let (mut state, workers) = state();

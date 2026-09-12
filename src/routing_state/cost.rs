@@ -24,6 +24,8 @@ pub struct CostEstimate {
     pub uncached_tokens: usize,
     pub estimated_output_tokens: usize,
     pub prefill_ms: f64,
+    pub restore_ms: f64,
+    pub restore_calibration_version: Option<String>,
     pub decode_ms: f64,
     pub load_multiplier: f64,
     pub queue_ms: f64,
@@ -94,10 +96,59 @@ impl CostModel {
             uncached_tokens: prompt - reusable,
             estimated_output_tokens: output,
             prefill_ms: prefill,
+            restore_ms: 0.0,
+            restore_calibration_version: None,
             decode_ms: decode,
             load_multiplier,
             queue_ms: self.queue_ms,
             ect_ms: ect,
         })
+    }
+}
+
+/// An independently calibrated transfer/restore term for one cache tier.
+/// Included in service time before applying the jointly fitted load multiplier.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RestoreCostModel {
+    pub fingerprint: String,
+    pub calibration_version: String,
+    pub location: String,
+    pub token_range: [usize; 2],
+    pub fixed_ms: f64,
+    pub per_token_ms: f64,
+}
+
+impl RestoreCostModel {
+    pub fn apply(
+        &self,
+        fingerprint: &str,
+        location: &str,
+        tokens: usize,
+        mut cost: CostEstimate,
+    ) -> Result<CostEstimate, &'static str> {
+        if self.fingerprint != fingerprint
+            || self.location != location
+            || self.calibration_version.is_empty()
+        {
+            return Err("incompatible_restore_model");
+        }
+        if !(self.token_range[0]..=self.token_range[1]).contains(&tokens) {
+            return Err("outside_restore_calibration_range");
+        }
+        let restore = self.fixed_ms + self.per_token_ms * tokens as f64;
+        if [self.fixed_ms, self.per_token_ms, restore]
+            .iter()
+            .any(|v| !v.is_finite() || *v < 0.0)
+        {
+            return Err("invalid_restore_prediction");
+        }
+        cost.ect_ms += restore * cost.load_multiplier;
+        if !cost.ect_ms.is_finite() {
+            return Err("invalid_restore_prediction");
+        }
+        cost.restore_ms = restore;
+        cost.restore_calibration_version = Some(self.calibration_version.clone());
+        Ok(cost)
     }
 }

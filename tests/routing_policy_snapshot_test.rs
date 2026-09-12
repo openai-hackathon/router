@@ -43,6 +43,128 @@ fn prefix(snapshot: &mut SelectionSnapshot, i: usize, value: usize) {
     }
 }
 
+fn controller_evidence(snapshot: &mut SelectionSnapshot) {
+    for worker in &mut snapshot.workers {
+        let PrefixEvidence::Observed { tokens, .. } = worker.evidence else {
+            panic!()
+        };
+        let meta = worker.metadata.as_ref().unwrap();
+        worker.evidence = PrefixEvidence::LmCacheObserved {
+            tokens,
+            cached_tokens: tokens,
+            instance_id: meta.worker_id.clone(),
+            location: "LocalCPUBackend".into(),
+            engine_epoch: Some(meta.engine_epoch.clone()),
+            age_ms: 0,
+        };
+    }
+}
+
+#[test]
+fn controller_cache_requires_identity_and_separate_restore_cost() {
+    use vllm_router_rs::routing_state::cost::RestoreCostModel;
+    let (mut snapshot, features, mut config) = scenario();
+    controller_evidence(&mut snapshot);
+    assert_eq!(
+        snapshot
+            .decide(Ranking::PrefixMax, &features, &config)
+            .unwrap()
+            .chosen_worker,
+        0
+    );
+    let fallback = snapshot
+        .decide(Ranking::KvBatchEct, &features, &config)
+        .unwrap();
+    assert_eq!(fallback.fallback_reason, Some("missing_restore_model"));
+    assert_eq!(fallback.candidates.len(), 3);
+    for worker in &snapshot.workers {
+        let meta = worker.metadata.as_ref().unwrap();
+        config.restore_models.insert(
+            meta.worker_id.clone(),
+            RestoreCostModel {
+                fingerprint: meta.fingerprint.clone(),
+                calibration_version: "synthetic-restore-only".into(),
+                location: "LocalCPUBackend".into(),
+                token_range: [1, 8192],
+                fixed_ms: 1000.0,
+                per_token_ms: 0.0,
+            },
+        );
+    }
+    let decision = snapshot
+        .decide(Ranking::KvBatchEct, &features, &config)
+        .unwrap();
+    assert_eq!(decision.fallback_reason, None);
+    // CPU restore changes the winner; the uncached worker is now fastest.
+    assert_eq!(decision.chosen_worker, 2);
+    for (candidate, expected) in decision.candidates.iter().zip([6460.0, 5060.0, 3500.0]) {
+        assert!((candidate.ect_ms.unwrap() - expected).abs() < 1e-8);
+    }
+    if let PrefixEvidence::LmCacheObserved { engine_epoch, .. } = &mut snapshot.workers[0].evidence
+    {
+        *engine_epoch = None;
+    }
+    for ranking in RANKINGS {
+        let decision = snapshot.decide(ranking, &features, &config).unwrap();
+        assert_eq!(
+            decision.fallback_reason,
+            Some("unverified_lmcache_identity")
+        );
+        assert_eq!(decision.chosen_worker, 2);
+    }
+}
+
+#[test]
+fn controller_restore_rejects_invalid_models_and_partial_metadata_still_filters_compatibility() {
+    use vllm_router_rs::routing_state::cost::RestoreCostModel;
+    let (mut snapshot, features, mut config) = scenario();
+    controller_evidence(&mut snapshot);
+    for worker in &snapshot.workers {
+        let meta = worker.metadata.as_ref().unwrap();
+        config.restore_models.insert(
+            meta.worker_id.clone(),
+            RestoreCostModel {
+                fingerprint: meta.fingerprint.clone(),
+                calibration_version: "test-only".into(),
+                location: "LocalCPUBackend".into(),
+                token_range: [1, 8192],
+                fixed_ms: 1.0,
+                per_token_ms: 0.0,
+            },
+        );
+    }
+    let id = snapshot.workers[0]
+        .metadata
+        .as_ref()
+        .unwrap()
+        .worker_id
+        .clone();
+    for kind in ["nan", "negative", "fingerprint", "location", "range"] {
+        let mut config = config.clone();
+        let model = config.restore_models.get_mut(&id).unwrap();
+        match kind {
+            "nan" => model.fixed_ms = f64::NAN,
+            "negative" => model.per_token_ms = -1.0,
+            "fingerprint" => model.fingerprint = "different".into(),
+            "location" => model.location = "remote".into(),
+            _ => model.token_range = [1, 10],
+        }
+        let result = snapshot
+            .decide(Ranking::KvBatchEct, &features, &config)
+            .unwrap();
+        assert!(result.fallback_reason.is_some(), "{kind}");
+        assert_eq!(result.candidates.len(), 3);
+    }
+    let meta = snapshot.workers[2].metadata.as_mut().unwrap();
+    meta.fingerprint = "different".into();
+    meta.engine_epoch.clear();
+    let decision = snapshot
+        .decide(Ranking::PrefixMax, &features, &config)
+        .unwrap();
+    assert_eq!(decision.fallback_reason, None);
+    assert_eq!(decision.candidates.len(), 2);
+}
+
 #[test]
 fn original_scenario_computes_costs_and_selects_three_different_workers() {
     let (snapshot, features, config) = scenario();

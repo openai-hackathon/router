@@ -102,21 +102,26 @@ impl SelectionSnapshot {
                 return None;
             }
             let metadata = worker.metadata.as_ref();
-            if let Some(meta) = metadata.filter(|m| m.valid()) {
-                if features.model.as_deref().is_some_and(|m| m != meta.model)
-                    || features
-                        .fingerprint
-                        .as_deref()
-                        .is_some_and(|f| f != meta.fingerprint)
+            if let Some(meta) = metadata {
+                if (!meta.model.is_empty()
+                    && features.model.as_deref().is_some_and(|m| m != meta.model))
+                    || (!meta.fingerprint.is_empty()
+                        && features
+                            .fingerprint
+                            .as_deref()
+                            .is_some_and(|f| f != meta.fingerprint))
                 {
                     continue;
                 }
-                if !identities.insert(&meta.worker_id) {
+                if meta.valid() && !identities.insert(&meta.worker_id) {
                     fallback.get_or_insert("ambiguous_worker_identity");
                 }
             }
             let evidence = match &worker.evidence {
-                PrefixEvidence::Observed { age_ms, .. } if *age_ms > config.max_evidence_age_ms => {
+                PrefixEvidence::Observed { age_ms, .. }
+                | PrefixEvidence::LmCacheObserved { age_ms, .. }
+                    if *age_ms > config.max_evidence_age_ms =>
+                {
                     PrefixEvidence::Stale
                 }
                 other => other.clone(),
@@ -143,6 +148,37 @@ impl SelectionSnapshot {
                 PrefixEvidence::Unknown => {
                     fallback.get_or_insert("unknown_kv");
                     0
+                }
+                PrefixEvidence::LmCacheObserved {
+                    tokens,
+                    cached_tokens,
+                    instance_id,
+                    location,
+                    engine_epoch,
+                    ..
+                } => {
+                    let valid = metadata.is_some_and(|meta| {
+                        meta.valid()
+                            && instance_id == &meta.worker_id
+                            && engine_epoch.as_deref() == Some(meta.engine_epoch.as_str())
+                            && location == "LocalCPUBackend"
+                            && tokens.is_multiple_of(meta.block_size)
+                            && tokens <= cached_tokens
+                            && features
+                                .tokens
+                                .as_ref()
+                                .is_some_and(|t| *tokens < t.len() && *cached_tokens <= t.len())
+                    });
+                    if !valid {
+                        fallback.get_or_insert(if engine_epoch.is_none() {
+                            "unverified_lmcache_identity"
+                        } else {
+                            "invalid_lmcache_evidence"
+                        });
+                        0
+                    } else {
+                        *tokens
+                    }
                 }
                 PrefixEvidence::Stale => {
                     fallback.get_or_insert("stale_kv");
@@ -179,6 +215,23 @@ impl SelectionSnapshot {
                             features.output_limit,
                             candidate.inflight,
                         )
+                    })
+                    .and_then(|estimate| {
+                        if let PrefixEvidence::LmCacheObserved {
+                            cached_tokens,
+                            location,
+                            ..
+                        } = &candidate.evidence
+                        {
+                            if *cached_tokens > 0 {
+                                return config
+                                    .restore_models
+                                    .get(&meta.worker_id)
+                                    .ok_or("missing_restore_model")?
+                                    .apply(&meta.fingerprint, location, *cached_tokens, estimate);
+                            }
+                        }
+                        Ok(estimate)
                     });
                 match prediction {
                     Ok(estimate) => {
