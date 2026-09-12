@@ -7,6 +7,7 @@
 //! - Common utilities
 
 pub mod circuit_breaker;
+pub mod dispatch;
 pub mod error;
 pub mod retry;
 pub mod token_bucket;
