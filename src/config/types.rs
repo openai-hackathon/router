@@ -13,6 +13,9 @@ pub struct RouterConfig {
     pub connection_mode: ConnectionMode,
     /// Policy configuration
     pub policy: PolicyConfig,
+    /// Optional JSON file configuring renderer, telemetry and measured cost models.
+    #[serde(default)]
+    pub routing_state_config: Option<String>,
     /// Server host address
     pub host: String,
     /// Server port
@@ -212,6 +215,12 @@ impl RoutingMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum PolicyConfig {
+    #[serde(rename = "prefix_max")]
+    PrefixMax,
+    #[serde(rename = "least_load_kv")]
+    LeastLoadKv,
+    #[serde(rename = "kv_batch_ect")]
+    KvBatchEct,
     #[serde(rename = "random")]
     Random,
 
@@ -251,6 +260,9 @@ pub enum PolicyConfig {
 impl PolicyConfig {
     pub fn name(&self) -> &'static str {
         match self {
+            PolicyConfig::PrefixMax => "prefix_max",
+            PolicyConfig::LeastLoadKv => "least_load_kv",
+            PolicyConfig::KvBatchEct => "kv_batch_ect",
             PolicyConfig::Random => "random",
             PolicyConfig::RoundRobin => "round_robin",
             PolicyConfig::CacheAware { .. } => "cache_aware",
@@ -479,6 +491,7 @@ impl Default for RouterConfig {
             enable_profiling: false,
             profile_timeout_secs: default_profile_timeout_secs(),
             kv_connector: KvConnector::default(),
+            routing_state_config: None,
         }
     }
 }
@@ -1053,6 +1066,7 @@ mod tests {
             enable_profiling: false,
             profile_timeout_secs: default_profile_timeout_secs(),
             kv_connector: KvConnector::default(),
+            routing_state_config: None,
         };
 
         assert!(config.mode.is_pd_mode());
@@ -1119,6 +1133,7 @@ mod tests {
             enable_profiling: false,
             profile_timeout_secs: default_profile_timeout_secs(),
             kv_connector: KvConnector::default(),
+            routing_state_config: None,
         };
 
         assert!(!config.mode.is_pd_mode());
@@ -1181,6 +1196,7 @@ mod tests {
             enable_profiling: false,
             profile_timeout_secs: default_profile_timeout_secs(),
             kv_connector: KvConnector::default(),
+            routing_state_config: None,
         };
 
         assert!(config.has_service_discovery());

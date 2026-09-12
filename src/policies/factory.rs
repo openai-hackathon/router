@@ -1,10 +1,12 @@
 //! Factory for creating load balancing policies
 
+use super::ObservedPolicy;
 use super::{
     CacheAwareConfig, CacheAwarePolicy, ConsistentHashPolicy, LoadBalancingPolicy,
     PowerOfTwoPolicy, RandomPolicy, RendezvousHashPolicy, RoundRobinPolicy,
 };
 use crate::config::PolicyConfig;
+use crate::routing_state::Ranking;
 use std::sync::Arc;
 
 /// Factory for creating policy instances
@@ -14,6 +16,9 @@ impl PolicyFactory {
     /// Create a policy from configuration
     pub fn create_from_config(config: &PolicyConfig) -> Arc<dyn LoadBalancingPolicy> {
         match config {
+            PolicyConfig::PrefixMax => Arc::new(ObservedPolicy(Ranking::PrefixMax)),
+            PolicyConfig::LeastLoadKv => Arc::new(ObservedPolicy(Ranking::LeastLoadKv)),
+            PolicyConfig::KvBatchEct => Arc::new(ObservedPolicy(Ranking::KvBatchEct)),
             PolicyConfig::Random => Arc::new(RandomPolicy::new()),
             PolicyConfig::RoundRobin => Arc::new(RoundRobinPolicy::new()),
             PolicyConfig::PowerOfTwo { .. } => Arc::new(PowerOfTwoPolicy::new()),
@@ -45,6 +50,9 @@ impl PolicyFactory {
     /// Create a policy by name (for dynamic loading)
     pub fn create_by_name(name: &str) -> Option<Arc<dyn LoadBalancingPolicy>> {
         match name.to_lowercase().as_str() {
+            "prefix_max" => Some(Arc::new(ObservedPolicy(Ranking::PrefixMax))),
+            "least_load_kv" => Some(Arc::new(ObservedPolicy(Ranking::LeastLoadKv))),
+            "kv_batch_ect" => Some(Arc::new(ObservedPolicy(Ranking::KvBatchEct))),
             "random" => Some(Arc::new(RandomPolicy::new())),
             "round_robin" | "roundrobin" => Some(Arc::new(RoundRobinPolicy::new())),
             "power_of_two" | "poweroftwo" => Some(Arc::new(PowerOfTwoPolicy::new())),

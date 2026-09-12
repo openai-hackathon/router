@@ -12,7 +12,12 @@ mod cache_aware;
 mod consistent_hash;
 mod factory;
 mod hash_key;
+pub mod kv_batch_ect;
+pub mod least_load_kv;
+mod observed;
 mod power_of_two;
+pub mod prefix_max;
+pub use observed::ObservedPolicy;
 mod random;
 mod registry;
 mod rendezvous_hash;
@@ -95,6 +100,10 @@ pub trait LoadBalancingPolicy: Send + Sync + Debug {
     /// policies to update their internal state.
     fn on_request_complete(&self, _worker_url: &str, _success: bool) {
         // Default: no-op for stateless policies
+    }
+
+    fn ranking(&self) -> Option<crate::routing_state::Ranking> {
+        None
     }
 
     /// Get policy name for metrics and debugging

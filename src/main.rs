@@ -107,8 +107,12 @@ struct CliArgs {
     worker_urls: Vec<String>,
 
     /// Load balancing policy to use
-    #[arg(long, default_value = "cache_aware", value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
+    #[arg(long, default_value = "cache_aware", value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash", "prefix_max", "least_load_kv", "kv_batch_ect"])]
     policy: String,
+
+    /// JSON configuration for observed KV telemetry, renderer and ECT calibration
+    #[arg(long)]
+    routing_state_config: Option<String>,
 
     /// Enable vLLM PD (Prefill-Decode) disaggregated mode with vLLM-specific two-stage processing
     #[arg(long, default_value_t = false)]
@@ -124,11 +128,11 @@ struct CliArgs {
     decode: Vec<String>,
 
     /// Specific policy for prefill nodes in PD mode
-    #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
+    #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash", "prefix_max", "least_load_kv", "kv_batch_ect"])]
     prefill_policy: Option<String>,
 
     /// Specific policy for decode nodes in PD mode
-    #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash"])]
+    #[arg(long, value_parser = ["random", "round_robin", "cache_aware", "power_of_two", "consistent_hash", "rendezvous_hash", "prefix_max", "least_load_kv", "kv_batch_ect"])]
     decode_policy: Option<String>,
 
     /// Timeout in seconds for worker startup
@@ -355,8 +359,8 @@ impl CliArgs {
     }
 
     /// Convert policy string to PolicyConfig
-    fn parse_policy(&self, policy_str: &str) -> PolicyConfig {
-        match policy_str {
+    fn parse_policy(&self, policy_str: &str) -> ConfigResult<PolicyConfig> {
+        Ok(match policy_str {
             "random" => PolicyConfig::Random,
             "round_robin" => PolicyConfig::RoundRobin,
             "cache_aware" => PolicyConfig::CacheAware {
@@ -373,8 +377,15 @@ impl CliArgs {
                 virtual_nodes: 160, // Default value
             },
             "rendezvous_hash" => PolicyConfig::RendezvousHash,
-            _ => PolicyConfig::RoundRobin, // Fallback
-        }
+            "prefix_max" => PolicyConfig::PrefixMax,
+            "least_load_kv" => PolicyConfig::LeastLoadKv,
+            "kv_batch_ect" => PolicyConfig::KvBatchEct,
+            _ => {
+                return Err(ConfigError::ValidationFailed {
+                    reason: format!("Unknown routing policy: {policy_str}"),
+                })
+            }
+        })
     }
 
     /// Convert CLI arguments to RouterConfig
@@ -443,8 +454,16 @@ impl CliArgs {
             RoutingMode::VllmPrefillDecode {
                 prefill_urls: prefill_urls.clone(),
                 decode_urls: final_decode_urls,
-                prefill_policy: self.prefill_policy.as_ref().map(|p| self.parse_policy(p)),
-                decode_policy: self.decode_policy.as_ref().map(|p| self.parse_policy(p)),
+                prefill_policy: self
+                    .prefill_policy
+                    .as_ref()
+                    .map(|p| self.parse_policy(p))
+                    .transpose()?,
+                decode_policy: self
+                    .decode_policy
+                    .as_ref()
+                    .map(|p| self.parse_policy(p))
+                    .transpose()?,
                 discovery_address: self.vllm_discovery_address.clone(),
             }
         } else {
@@ -461,7 +480,7 @@ impl CliArgs {
         };
 
         // Main policy
-        let policy = self.parse_policy(&self.policy);
+        let policy = self.parse_policy(&self.policy)?;
 
         // Service discovery configuration
         let discovery = if self.service_discovery {
@@ -557,6 +576,7 @@ impl CliArgs {
             enable_profiling: self.profile,
             profile_timeout_secs: 10, // Default profiling timeout
             kv_connector: self.kv_connector,
+            routing_state_config: self.routing_state_config.clone(),
         })
     }
 
@@ -737,4 +757,18 @@ Provide --worker-urls or PD flags as usual.",
     })?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod observed_policy_cli_tests {
+    use super::*;
+    #[test]
+    fn accepts_new_policy_names_and_rejects_typos() {
+        for name in ["prefix_max", "least_load_kv", "kv_batch_ect"] {
+            let cli = CliArgs::try_parse_from(["vllm-router", "--policy", name]).unwrap();
+            assert_eq!(cli.parse_policy(name).unwrap().name(), name);
+            assert!(cli.parse_policy("prefix_mxa").is_err());
+        }
+        assert!(CliArgs::try_parse_from(["vllm-router", "--policy", "prefix_mxa"]).is_err());
+    }
 }

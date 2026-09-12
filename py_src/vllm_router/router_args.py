@@ -23,6 +23,7 @@ class RouterArgs:
 
     # Routing policy
     policy: str = "cache_aware"
+    routing_state_config: Optional[str] = None
     prefill_policy: Optional[str] = None  # Specific policy for prefill nodes in PD mode
     decode_policy: Optional[str] = None  # Specific policy for decode nodes in PD mode
     worker_startup_timeout_secs: int = 600
@@ -33,9 +34,7 @@ class RouterArgs:
     eviction_interval_secs: int = 120
     max_tree_size: int = 2**26
     max_payload_size: int = 512 * 1024 * 1024  # 512MB default for large batches
-    intra_node_data_parallel_size: int = (
-        1  # Intra-node data parallel size (DP-aware routing automatically enabled when > 1)
-    )
+    intra_node_data_parallel_size: int = 1  # Intra-node data parallel size (DP-aware routing automatically enabled when > 1)
     enable_igw: bool = False  # Enable IGW (Inter-Gateway) mode for multi-model support
     api_key: Optional[str] = None
     log_dir: Optional[str] = None
@@ -106,6 +105,12 @@ class RouterArgs:
         """
         prefix = "router-" if use_router_prefix else ""
 
+        parser.add_argument(
+            f"--{prefix}routing-state-config",
+            default=None,
+            help="JSON configuration for KV routing telemetry, renderer and cost models",
+        )
+
         # Worker configuration
         if not exclude_host_port:
             parser.add_argument(
@@ -140,6 +145,9 @@ class RouterArgs:
                 "cache_aware",
                 "power_of_two",
                 "consistent_hash",
+                "prefix_max",
+                "least_load_kv",
+                "kv_batch_ect",
             ],
             help="Load balancing policy to use. In PD mode, this is used for both prefill and decode unless overridden",
         )
@@ -153,6 +161,9 @@ class RouterArgs:
                 "cache_aware",
                 "power_of_two",
                 "consistent_hash",
+                "prefix_max",
+                "least_load_kv",
+                "kv_batch_ect",
             ],
             help="Specific policy for prefill nodes in PD mode. If not specified, uses the main policy",
         )
@@ -166,6 +177,9 @@ class RouterArgs:
                 "cache_aware",
                 "power_of_two",
                 "consistent_hash",
+                "prefix_max",
+                "least_load_kv",
+                "kv_batch_ect",
             ],
             help="Specific policy for decode nodes in PD mode. If not specified, uses the main policy",
         )
@@ -571,7 +585,6 @@ class RouterArgs:
 
         prefill_urls = []
         for prefill_args in prefill_list:
-
             url = prefill_args[0]
 
             # Handle optional bootstrap port

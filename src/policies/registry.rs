@@ -168,6 +168,9 @@ impl PolicyRegistry {
     /// Create a policy from a type string
     fn create_policy_from_type(&self, policy_type: &str) -> Arc<dyn LoadBalancingPolicy> {
         match policy_type {
+            "prefix_max" | "least_load_kv" | "kv_batch_ect" => {
+                super::PolicyFactory::create_by_name(policy_type).unwrap()
+            }
             "round_robin" => Arc::new(RoundRobinPolicy::new()),
             "random" => Arc::new(RandomPolicy::new()),
             "cache_aware" => Arc::new(CacheAwarePolicy::new()),
@@ -184,6 +187,9 @@ impl PolicyRegistry {
     fn create_policy_from_config(config: &PolicyConfig) -> Arc<dyn LoadBalancingPolicy> {
         match config {
             PolicyConfig::RoundRobin => Arc::new(RoundRobinPolicy::new()),
+            PolicyConfig::PrefixMax | PolicyConfig::LeastLoadKv | PolicyConfig::KvBatchEct => {
+                super::PolicyFactory::create_from_config(config)
+            }
             PolicyConfig::Random => Arc::new(RandomPolicy::new()),
             PolicyConfig::CacheAware {
                 cache_threshold,

@@ -245,27 +245,59 @@ async fn inference_generate(
 async fn v1_chat_completions(
     State(state): State<Arc<AppState>>,
     headers: http::HeaderMap,
-    Json(body): Json<ChatCompletionRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Response {
     if let Err(response) = authorize_request(&state, &headers).await {
         return response;
     }
 
-    state.router.route_chat(Some(&headers), &body, None).await
+    let typed_body: ChatCompletionRequest = match serde_json::from_value(body.clone()) {
+        Ok(body) => body,
+        Err(_) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, "Invalid request body").into_response()
+        }
+    };
+    if state.router.router_type() == "regular" {
+        return state
+            .router
+            .route_transparent(
+                Some(&headers),
+                "/v1/chat/completions",
+                &http::Method::POST,
+                body,
+            )
+            .await;
+    }
+    state
+        .router
+        .route_chat(Some(&headers), &typed_body, None)
+        .await
 }
 
 async fn v1_completions(
     State(state): State<Arc<AppState>>,
     headers: http::HeaderMap,
-    Json(body): Json<CompletionRequest>,
+    Json(body): Json<serde_json::Value>,
 ) -> Response {
     if let Err(response) = authorize_request(&state, &headers).await {
         return response;
     }
 
+    let typed_body: CompletionRequest = match serde_json::from_value(body.clone()) {
+        Ok(body) => body,
+        Err(_) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, "Invalid request body").into_response()
+        }
+    };
+    if state.router.router_type() == "regular" {
+        return state
+            .router
+            .route_transparent(Some(&headers), "/v1/completions", &http::Method::POST, body)
+            .await;
+    }
     state
         .router
-        .route_completion(Some(&headers), &body, None)
+        .route_completion(Some(&headers), &typed_body, None)
         .await
 }
 
@@ -855,7 +887,12 @@ pub async fn startup(config: ServerConfig) -> Result<(), Box<dyn std::error::Err
     );
 
     println!("DEBUG: Creating HTTP client");
+    let routing_headers = crate::routing_state::config::RoutingConfig::load(
+        config.router_config.routing_state_config.as_deref(),
+    )?
+    .headers()?;
     let client = Client::builder()
+        .default_headers(routing_headers)
         .pool_idle_timeout(Some(Duration::from_secs(50)))
         .pool_max_idle_per_host(500)
         .timeout(Duration::from_secs(config.request_timeout_secs))

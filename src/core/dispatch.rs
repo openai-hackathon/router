@@ -57,9 +57,11 @@ impl DispatchLedger {
     }
 
     fn release(&self, id: Uuid, success: bool) -> bool {
-        let attempt = self.attempts.lock().remove(&id);
+        let mut attempts = self.attempts.lock();
+        let attempt = attempts.remove(&id);
         if let Some(attempt) = attempt {
             attempt.worker.decrement_load();
+            drop(attempts);
             RouterMetrics::set_running_requests(attempt.worker.url(), attempt.worker.load());
             attempt
                 .policy

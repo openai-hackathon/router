@@ -10,6 +10,9 @@ def policy_from_str(policy_str: Optional[str]) -> PolicyType:
     if policy_str is None:
         return None
     policy_map = {
+        "prefix_max": PolicyType.PrefixMax,
+        "least_load_kv": PolicyType.LeastLoadKv,
+        "kv_batch_ect": PolicyType.KvBatchEct,
         "random": PolicyType.Random,
         "round_robin": PolicyType.RoundRobin,
         "cache_aware": PolicyType.CacheAware,

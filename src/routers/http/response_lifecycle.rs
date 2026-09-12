@@ -29,10 +29,15 @@ impl TerminalEvents {
                 if !self.oversized {
                     let data = self.data.strip_suffix(b"\n").unwrap_or(&self.data);
                     if data == b"[DONE]" {
-                        terminal = Some(true);
+                        terminal.get_or_insert(true);
                     } else if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                        if value.get("error").is_some() {
+                            terminal = Some(false);
+                        }
                         match value.get("type").and_then(|v| v.as_str()) {
-                            Some("response.completed") => terminal = Some(true),
+                            Some("response.completed") => {
+                                terminal.get_or_insert(true);
+                            }
                             Some("response.failed" | "response.incomplete" | "error") => {
                                 terminal = Some(false)
                             }
@@ -95,8 +100,9 @@ pub async fn forward(
             response.bytes_stream(),
             reservation,
             TerminalEvents::default(),
+            false,
         ),
-        move |(mut stream, mut reservation, mut events)| async move {
+        move |(mut stream, mut reservation, mut events, failed)| async move {
             match stream.next().await {
                 Some(Ok(bytes)) => {
                     if sse {
@@ -106,13 +112,13 @@ pub async fn forward(
                     }
                     Some((
                         Ok::<_, reqwest::Error>(bytes),
-                        (stream, reservation, events),
+                        (stream, reservation, events, failed),
                     ))
                 }
-                Some(Err(e)) => Some((Err(e), (stream, reservation, events))),
+                Some(Err(e)) => Some((Err(e), (stream, reservation, events, true))),
                 None => {
                     // SSE EOF without a terminal event can be an interrupted generation.
-                    if !sse && !background {
+                    if !sse && !background && !failed {
                         reservation.finish(true);
                     }
                     None

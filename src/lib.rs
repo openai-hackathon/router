@@ -12,6 +12,7 @@ pub mod otel_trace;
 pub mod policies;
 pub mod protocols;
 pub mod routers;
+pub mod routing_state;
 pub mod server;
 pub mod service_discovery;
 pub mod tokenizer;
@@ -26,6 +27,9 @@ pub enum PolicyType {
     CacheAware,
     PowerOfTwo,
     ConsistentHash,
+    PrefixMax,
+    LeastLoadKv,
+    KvBatchEct,
 }
 
 #[pyclass]
@@ -97,6 +101,7 @@ struct Router {
     otlp_traces_endpoint: Option<String>,
     // KV connector for PD disaggregation ("nixl" or "mooncake")
     kv_connector: String,
+    routing_state_config: Option<String>,
 }
 
 impl Router {
@@ -109,6 +114,9 @@ impl Router {
         // Convert policy helper function
         let convert_policy = |policy: &PolicyType| -> ConfigPolicyConfig {
             match policy {
+                PolicyType::PrefixMax => ConfigPolicyConfig::PrefixMax,
+                PolicyType::LeastLoadKv => ConfigPolicyConfig::LeastLoadKv,
+                PolicyType::KvBatchEct => ConfigPolicyConfig::KvBatchEct,
                 PolicyType::Random => ConfigPolicyConfig::Random,
                 PolicyType::RoundRobin => ConfigPolicyConfig::RoundRobin,
                 PolicyType::CacheAware => ConfigPolicyConfig::CacheAware {
@@ -224,6 +232,7 @@ impl Router {
             history_backend: config::HistoryBackend::Memory,
             enable_profiling: false, // Profiling disabled in Python binding by default
             profile_timeout_secs: 10, // Default profiling timeout
+            routing_state_config: self.routing_state_config.clone(),
             kv_connector: match self.kv_connector.to_ascii_lowercase().as_str() {
                 "nixl" => config::KvConnector::Nixl,
                 "mooncake" => config::KvConnector::Mooncake,
@@ -310,6 +319,7 @@ impl Router {
         otlp_traces_endpoint = None,
         // KV connector default (PD disaggregation)
         kv_connector = String::from("nixl"),
+        routing_state_config = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -372,6 +382,7 @@ impl Router {
         enable_trace: bool,
         otlp_traces_endpoint: Option<String>,
         kv_connector: String,
+        routing_state_config: Option<String>,
     ) -> PyResult<Self> {
         Ok(Router {
             host,
@@ -433,6 +444,7 @@ impl Router {
             enable_trace,
             otlp_traces_endpoint,
             kv_connector,
+            routing_state_config,
         })
     }
 

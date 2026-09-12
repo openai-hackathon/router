@@ -18,6 +18,33 @@ impl ConfigValidator {
 
         Self::validate_mode(&config.mode, has_service_discovery)?;
         Self::validate_policy(&config.policy)?;
+        let is_observed = |p: &PolicyConfig| {
+            matches!(
+                p,
+                PolicyConfig::PrefixMax | PolicyConfig::LeastLoadKv | PolicyConfig::KvBatchEct
+            )
+        };
+        let observed = is_observed(&config.policy)
+            || match &config.mode {
+                RoutingMode::VllmPrefillDecode {
+                    prefill_policy,
+                    decode_policy,
+                    ..
+                } => {
+                    prefill_policy.as_ref().is_some_and(is_observed)
+                        || decode_policy.as_ref().is_some_and(is_observed)
+                }
+                _ => false,
+            };
+        if observed
+            && (!matches!(config.mode, RoutingMode::Regular { .. })
+                || config.enable_igw
+                || config.intra_node_data_parallel_size != 1)
+        {
+            return Err(ConfigError::ValidationFailed { reason: "Observed KV policies require regular HTTP routing and one engine per worker URL".into() });
+        }
+        crate::routing_state::config::RoutingConfig::load(config.routing_state_config.as_deref())
+            .map_err(|reason| ConfigError::ValidationFailed { reason })?;
         Self::validate_server_settings(config)?;
 
         if let Some(discovery) = &config.discovery {
@@ -126,7 +153,11 @@ impl ConfigValidator {
     /// Validate policy configuration
     fn validate_policy(policy: &PolicyConfig) -> ConfigResult<()> {
         match policy {
-            PolicyConfig::Random | PolicyConfig::RoundRobin => {
+            PolicyConfig::Random
+            | PolicyConfig::RoundRobin
+            | PolicyConfig::PrefixMax
+            | PolicyConfig::LeastLoadKv
+            | PolicyConfig::KvBatchEct => {
                 // No specific validation needed
             }
             PolicyConfig::CacheAware {

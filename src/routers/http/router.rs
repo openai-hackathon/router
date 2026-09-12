@@ -14,6 +14,12 @@ use crate::protocols::spec::{
 use crate::routers::header_utils;
 use crate::routers::http::dp_utils;
 use crate::routers::{RouterTrait, WorkerManagement};
+use crate::routing_state::{
+    config::RoutingConfig,
+    features::{self, RequestFeatures},
+    telemetry::Collectors,
+    SharedRoutingState,
+};
 use axum::body::to_bytes;
 use axum::{
     body::Body,
@@ -39,7 +45,9 @@ pub struct Router {
     api_key: Option<String>,
     retry_config: RetryConfig,
     circuit_breaker_config: CircuitBreakerConfig,
-    dispatch_ledger: Arc<DispatchLedger>,
+    routing_state: Arc<SharedRoutingState>,
+    feature_client: Client,
+    _collectors: Option<Collectors>,
 }
 
 impl Router {
@@ -54,10 +62,11 @@ impl Router {
 
         // Wait for workers to be healthy (skip if empty - for service discovery mode)
         if !worker_urls.is_empty() {
-            Self::wait_for_healthy_workers(
+            Self::wait_for_healthy_workers_async(
                 &worker_urls,
                 ctx.router_config.worker_startup_timeout_secs,
                 ctx.router_config.worker_startup_check_interval_secs,
+                Some(ctx.client.clone()),
             )
             .await?;
         }
@@ -136,6 +145,37 @@ impl Router {
             }
         }
 
+        let routing_config =
+            RoutingConfig::load(ctx.router_config.routing_state_config.as_deref())?;
+        let routing_state = Arc::new(SharedRoutingState::new(
+            routing_config.clone(),
+            Arc::new(DispatchLedger::default()),
+        ));
+        let headers = routing_config.headers()?;
+        let feature_client = Client::builder()
+            .default_headers(headers.clone())
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_millis(routing_config.render_timeout_ms))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let telemetry_client = Client::builder()
+            .default_headers(headers)
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_millis(routing_config.telemetry_timeout_ms))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let collectors = if ctx.policy_registry.get_default_policy().ranking().is_some()
+            || ctx.router_config.routing_state_config.is_some()
+        {
+            Some(Collectors::start(
+                ctx.worker_registry.clone(),
+                &routing_state,
+                telemetry_client,
+            ))
+        } else {
+            None
+        };
+
         Ok(Router {
             worker_registry: ctx.worker_registry.clone(),
             policy_registry: ctx.policy_registry.clone(),
@@ -148,7 +188,9 @@ impl Router {
             api_key: ctx.router_config.api_key.clone(),
             retry_config: ctx.router_config.effective_retry_config(),
             circuit_breaker_config: core_cb_config,
-            dispatch_ledger: Arc::new(DispatchLedger::default()),
+            routing_state,
+            feature_client,
+            _collectors: collectors,
         })
     }
 
@@ -182,6 +224,7 @@ impl Router {
             worker_urls,
             worker_startup_timeout_secs,
             worker_startup_check_interval_secs,
+            None,
         )
         .await
     }
@@ -190,6 +233,7 @@ impl Router {
         worker_urls: &[String],
         worker_startup_timeout_secs: u64,
         worker_startup_check_interval_secs: u64,
+        client: Option<Client>,
     ) -> Result<(), String> {
         // Extract unique base URLs (hosts) for health checks
         // This deduplicates DP-aware URLs like http://host:8081@0, @1, @2, @3
@@ -224,10 +268,7 @@ impl Router {
         );
 
         let start_time = std::time::Instant::now();
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+        let client = client.unwrap_or_default();
 
         loop {
             if start_time.elapsed() > Duration::from_secs(worker_startup_timeout_secs) {
@@ -249,7 +290,12 @@ impl Router {
 
                 let check_health = tokio::spawn(async move {
                     let health_url = format!("{}/health", url_clone);
-                    match client_clone.get(&health_url).send().await {
+                    match client_clone
+                        .get(&health_url)
+                        .timeout(Duration::from_secs(2))
+                        .send()
+                        .await
+                    {
                         Ok(res) => {
                             if res.status().is_success() {
                                 None
@@ -478,11 +524,12 @@ impl Router {
     }
 
     /// Select worker for a specific model considering circuit breaker state
-    fn select_worker_for_model(
+    fn reserve_for_model(
         &self,
         model_id: Option<&str>,
         text: Option<&str>,
         headers: Option<&HeaderMap>,
+        features: &RequestFeatures,
     ) -> Option<Reservation> {
         // Get workers for the specified model (O(1) lookup if model_id is provided)
         let workers = match model_id {
@@ -508,10 +555,23 @@ impl Router {
         // Convert headers for policies that need them (e.g., consistent_hash)
         let request_headers = Self::headers_to_request_headers(headers);
 
-        self.dispatch_ledger
-            .select_and_reserve(&available, policy.clone(), || {
-                policy.select_worker_with_headers(&available, text, request_headers.as_ref())
-            })
+        self.routing_state
+            .reserve(&available, policy, features, text, request_headers.as_ref())
+    }
+
+    #[cfg(test)]
+    fn select_worker_for_model(
+        &self,
+        model: Option<&str>,
+        text: Option<&str>,
+        headers: Option<&HeaderMap>,
+    ) -> Option<Reservation> {
+        self.reserve_for_model(
+            model,
+            text,
+            headers,
+            &RequestFeatures::unsupported(&serde_json::Value::Null, headers),
+        )
     }
 
     pub async fn route_typed_request<T: GenerationRequest + serde::Serialize + Clone>(
@@ -521,37 +581,67 @@ impl Router {
         route: &str,
         model_id: Option<&str>,
     ) -> Response {
-        let start = Instant::now();
-        let is_stream = typed_req.is_stream();
-        let text = typed_req.extract_text_for_routing();
+        let body = match serde_json::to_value(typed_req) {
+            Ok(body) => body,
+            Err(_) => return (StatusCode::BAD_REQUEST, "Invalid request body").into_response(),
+        };
+        self.route_json_request(
+            headers,
+            &body,
+            route,
+            model_id,
+            typed_req.is_stream(),
+            &typed_req.extract_text_for_routing(),
+        )
+        .await
+    }
 
+    async fn route_json_request(
+        &self,
+        headers: Option<&HeaderMap>,
+        body: &serde_json::Value,
+        route: &str,
+        model_id: Option<&str>,
+        is_stream: bool,
+        text: &str,
+    ) -> Response {
+        let start = Instant::now();
+        let policy = model_id.map_or_else(
+            || self.policy_registry.get_default_policy(),
+            |m| self.policy_registry.get_policy_or_default(m),
+        );
+        let features = if policy.ranking().is_some() {
+            features::build(
+                &self.feature_client,
+                self.routing_state.renderer_url().as_deref(),
+                route,
+                body,
+                headers,
+            )
+            .await
+        } else {
+            RequestFeatures::unsupported(body, headers)
+        };
         let response = RetryExecutor::execute_response_with_retry(
             &self.retry_config,
             // operation per attempt
             |_: u32| async {
-                let reservation = match self.select_worker_for_model(model_id, Some(&text), headers)
-                {
-                    Some(w) => w,
-                    None => {
-                        RouterMetrics::record_request_error(route, "no_available_workers");
-                        return (
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "No available workers (all circuits open or unhealthy)",
-                        )
-                            .into_response();
-                    }
-                };
+                let reservation =
+                    match self.reserve_for_model(model_id, Some(text), headers, &features) {
+                        Some(w) => w,
+                        None => {
+                            RouterMetrics::record_request_error(route, "no_available_workers");
+                            return (
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "No available workers (all circuits open or unhealthy)",
+                            )
+                                .into_response();
+                        }
+                    };
 
                 let worker = reservation.worker.clone();
                 let response = self
-                    .send_typed_request(
-                        headers,
-                        typed_req,
-                        route,
-                        worker.url(),
-                        is_stream,
-                        reservation,
-                    )
+                    .send_typed_request(headers, body, route, worker.url(), is_stream, reservation)
                     .await;
                 let status = response.status();
                 worker.record_outcome(status.is_success() || status.is_client_error());
@@ -764,6 +854,7 @@ impl Router {
         if let Some(headers) = headers {
             for (name, value) in headers {
                 if *name != CONTENT_TYPE
+                    && name != "host"
                     && *name != CONTENT_LENGTH
                     && !header_utils::TRACE_HEADER_NAMES
                         .iter()
@@ -811,12 +902,19 @@ impl Router {
             }
         };
 
-        super::response_lifecycle::forward(res, reservation, is_stream, false).await
+        self.routing_state
+            .validate_response_identity(worker_url, res.headers());
+        let background = serde_json::to_value(typed_req)
+            .ok()
+            .and_then(|v| v.get("background").and_then(|v| v.as_bool()))
+            .unwrap_or(false);
+        super::response_lifecycle::forward(res, reservation, is_stream, background).await
     }
 
     pub async fn add_worker(&self, worker_url: &str) -> Result<String, String> {
         let start_time = std::time::Instant::now();
         let client = reqwest::Client::builder()
+            .default_headers(self.routing_state.config.headers()?)
             .timeout(Duration::from_secs(self.worker_startup_timeout_secs))
             .build()
             .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
@@ -1336,6 +1434,24 @@ impl RouterTrait for Router {
         method: &Method,
         body: serde_json::Value,
     ) -> Response {
+        if *method == Method::POST
+            && matches!(
+                path,
+                "/v1/chat/completions"
+                    | "/v1/completions"
+                    | "/v1/responses"
+                    | "/inference/v1/generate"
+            )
+        {
+            let is_stream = body
+                .get("stream")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let text = serde_json::to_string(&body).unwrap_or_default();
+            return self
+                .route_json_request(headers, &body, path, None, is_stream, &text)
+                .await;
+        }
         debug!("Transparent proxy: routing {} {} to backend", method, path);
 
         // Select a worker (filter by availability like select_worker_for_model)
@@ -1356,22 +1472,20 @@ impl RouterTrait for Router {
         let policy = self.policy_registry.get_default_policy();
         let request_text = serde_json::to_string(&body).ok();
         let request_headers = Self::headers_to_request_headers(headers);
-        let mut reservation =
-            match self
-                .dispatch_ledger
-                .select_and_reserve(&workers, policy.clone(), || {
-                    policy.select_worker_with_headers(
-                        &workers,
-                        request_text.as_deref(),
-                        request_headers.as_ref(),
-                    )
-                }) {
-                Some(reservation) => reservation,
-                None => {
-                    return (StatusCode::SERVICE_UNAVAILABLE, "Failed to select a worker")
-                        .into_response()
-                }
-            };
+        let features = RequestFeatures::unsupported(&body, headers);
+        let mut reservation = match self.routing_state.reserve(
+            &workers,
+            policy,
+            &features,
+            request_text.as_deref(),
+            request_headers.as_ref(),
+        ) {
+            Some(reservation) => reservation,
+            None => {
+                return (StatusCode::SERVICE_UNAVAILABLE, "Failed to select a worker")
+                    .into_response()
+            }
+        };
         let worker = reservation.worker.clone();
         let url = worker.endpoint_url(path);
 
@@ -1410,8 +1524,8 @@ impl RouterTrait for Router {
         if let Some(headers) = headers {
             for (name, value) in headers {
                 if *name != CONTENT_TYPE
-                    && *name != CONTENT_LENGTH
                     && name != "host"
+                    && *name != CONTENT_LENGTH
                     && name != "authorization"
                     && !header_utils::TRACE_HEADER_NAMES.contains(&name.as_str())
                 {
@@ -1492,8 +1606,67 @@ mod tests {
             client: Client::new(),
             retry_config: RetryConfig::default(),
             circuit_breaker_config: CircuitBreakerConfig::default(),
-            dispatch_ledger: Arc::new(DispatchLedger::default()),
+            routing_state: Arc::new(SharedRoutingState::new(
+                RoutingConfig::default(),
+                Arc::new(DispatchLedger::default()),
+            )),
+            feature_client: Client::new(),
+            _collectors: None,
         }
+    }
+
+    #[tokio::test]
+    async fn observed_policies_use_raw_chat_and_responses_and_release_retries() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_handler = attempts.clone();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let inference = axum::routing::post(move |Json(body): Json<serde_json::Value>| {
+            let attempts = attempts_handler.clone();
+            async move {
+                let current = attempts.fetch_add(1, Ordering::SeqCst);
+                if current % 2 == 0 {
+                    return (StatusCode::SERVICE_UNAVAILABLE, "rejected").into_response();
+                }
+                Json(body).into_response()
+            }
+        });
+        let app = axum::Router::new()
+            .route("/v1/chat/completions", inference.clone())
+            .route("/v1/responses", inference);
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        for config in [
+            crate::config::PolicyConfig::PrefixMax,
+            crate::config::PolicyConfig::LeastLoadKv,
+            crate::config::PolicyConfig::KvBatchEct,
+        ] {
+            let mut router = create_test_regular_router();
+            router.worker_registry = Arc::new(WorkerRegistry::new());
+            let worker: Arc<dyn Worker> =
+                Arc::new(BasicWorker::new(url.clone(), WorkerType::Regular));
+            router.worker_registry.register(worker.clone());
+            router.policy_registry = Arc::new(PolicyRegistry::new(config));
+            router.retry_config.max_retries = 2;
+            for route in ["/v1/chat/completions", "/v1/responses"] {
+                let body = serde_json::json!({"model":"local", "messages":[{"role":"user","content":"hello"}], "priority":0, "chat_template_kwargs":{"enable_thinking":false}, "custom_extension":{"preserve":true}});
+                let response = router
+                    .route_transparent(None, route, &Method::POST, body.clone())
+                    .await;
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = to_bytes(response.into_body(), 4096).await.unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                    body
+                );
+                assert_eq!(worker.load(), 0);
+                assert_eq!(router.routing_state.ledger.unknown_count(worker.url()), 0);
+            }
+        }
+        assert_eq!(attempts.load(Ordering::SeqCst), 12);
+        server.abort();
     }
 
     #[test]
@@ -1562,7 +1735,12 @@ mod tests {
             client: Client::new(),
             retry_config: RetryConfig::default(),
             circuit_breaker_config: CircuitBreakerConfig::default(),
-            dispatch_ledger: Arc::new(DispatchLedger::default()),
+            routing_state: Arc::new(SharedRoutingState::new(
+                RoutingConfig::default(),
+                Arc::new(DispatchLedger::default()),
+            )),
+            feature_client: Client::new(),
+            _collectors: None,
         }
     }
 
