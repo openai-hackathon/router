@@ -9,6 +9,7 @@ retry/stream cleanup and session affinity.
 ```json
 {
   "lmcache": {
+    "identity_mode": "endpoint",
     "renderer_base_url": "https://renderer.example",
     "model": "local",
     "fingerprint": null,
@@ -34,11 +35,23 @@ retry/stream cleanup and session affinity.
 ```
 
 Replace every URL/ID and block size with the deployment's values. `block_size`
-is the pinned native vLLM block size, not a guessed LMCache chunk size. The
-renderer and each worker have separate serving fingerprints: populate them only
-after verifying the actual model/tokenizer/serving configuration. Equal model
-aliases or tokens do not establish equal fingerprints. Null fingerprints allow
-data-path development and cause `missing_serving_fingerprint` fallback.
+is the pinned native vLLM block size, not a guessed LMCache chunk size.
+
+`identity_mode: "endpoint"` enables the current experiment's explicit assumption:
+all workers use the same model/tokenizer/serving configuration, and each configured
+inference endpoint maps to one fixed engine and controller instance. The selector
+uses that mapping without requiring fingerprints or engine identity headers.
+Fingerprints can remain null; missing verification no longer forces fallback.
+This is an operator assumption, not measured engine identity. Decisions and their
+metric counter include `identity_mode="endpoint"`; evidence keeps unknown epochs
+null. Successful session home is scoped by model/session and records the endpoint.
+If endpoints are redeployed or repointed during an experiment, restart the Router
+to reset session state; this mode cannot detect an engine replacement behind a URL.
+
+Omitting the field selects `identity_mode: "verified"`. In that mode, populate
+the renderer and worker fingerprints from their verified serving configurations;
+null fingerprints cause `missing_serving_fingerprint` fallback. Equal aliases or
+tokens alone do not verify the configurations. Unknown mode names are rejected.
 
 ```sh
 vllm-router --worker-urls "$WORKER_ONE" "$WORKER_TWO" \
@@ -91,7 +104,7 @@ The baselines rank restorable CPU prefix when this source is trusted; native
 GPU-prefix baselines and controller-prefix baselines must be labeled separately
 in experimental results.
 
-To establish engine identity, lookup and health must both return matching
+In `verified` mode, to establish engine identity, lookup and health must both return matching
 `x-routing-worker-id` and `x-routing-engine-epoch` headers, bound to the actual
 inference engine. The inference response must agree. These are identity
 extensions of the deployment entry point, **not built-in LMCache headers**.
@@ -102,12 +115,15 @@ into restart epochs. A mismatch latches invalidation until a new verified epoch.
 Out-of-order replies cannot replace newer identity observations. Controller
 HTTP observations alone never release unknown inference attempts from the
 ledger; termination still needs an inference terminal event or independently
-verified lifecycle reconciliation.
+verified lifecycle reconciliation. Endpoint mode does not assign an invented
+epoch to attempts or use controller identity changes to release them.
 
 HTTP/schema/health failures, unsupported tiers, overlong/non-block prefixes,
 missing worker configurations, or stale observations become unknown/stale for
 the common selector. No candidate is removed just because its controller failed.
-Known incompatible fingerprints are excluded even when other metadata is absent.
+In verified mode, known incompatible fingerprints are excluded even when other
+metadata is absent. Endpoint mode retains model-name, configured-instance,
+block-size, tier, health and evidence-age checks, while assuming serving compatibility.
 The collector counter `router_lmcache_observations_total` reports the acquisition
 outcome, while `router_routing_decisions_total` reports the actual fallback.
 An `observed` acquisition alone does not mean the policy trusted that evidence.
@@ -120,6 +136,11 @@ requires a measured `restore_models` entry for that worker, with these fields:
 - `fingerprint`, `calibration_version`, and `location: "LocalCPUBackend"`;
 - `token_range: [minimum, maximum]` for stored tokens being restored;
 - nonnegative finite `fixed_ms` and `per_token_ms`.
+
+Endpoint mode assigns both models by the configured instance ID and skips serving
+fingerprint comparison. Calibration version, ranges, finite/nonnegative costs and
+restore tier still must be valid. Each worker keeps its own coefficients; assuming
+the same serving configuration does not assume identical hardware performance.
 
 The initial tier extension is:
 
@@ -145,20 +166,34 @@ did not provide CPU restoration samples.
 ## Verification
 
 `bash scripts/routing/smoke.sh` runs all three policies against native fixtures
-and LMCache fixtures through the real Router binary. LMCache tests verify exact
+and LMCache fixtures in both identity modes through the real Router binary. LMCache tests verify exact
 lookup token forwarding, per-controller instance mapping, no `/routing/*`
 calls, fresh lookups on retries, stream-held reservations, and controller-health
 failure fallback. Snapshot tests verify missing identity and restoration costs,
 including a case where accounting for restoration changes the ECT winner.
+Endpoint tests omit all fingerprints and routing identity headers, exercise all
+three rankings and bounded affinity, and verify that unknown/stale evidence and
+missing restoration costs still cause the common fallback. Session lifecycle
+tests require successful completion to update home and preserve unknown attempts.
 
 The live [c/d observations](results/lmcache-cd-observations-2026-09-12.json)
 demonstrate controller scope and token parity; they do not establish trusted
 engine identity, GPU cache migration or a calibrated ECT benchmark.
 
-The [live Router smoke](results/router-lmcache-cd-smoke-2026-09-12.json) then ran
+The earlier [live Router smoke](results/router-lmcache-cd-smoke-2026-09-12.json) ran
 all three CLI policies against c/d, two concurrent requests per policy. All six
 returned 200; each policy dispatched one request to each endpoint, acquired
 observations from both controllers for both attempts, and ended with zero
 in-flight requests. Fingerprints were explicitly null, so all six decisions
 reported `missing_serving_fingerprint` fallback. This validates the real data
 path and common lifecycle, not trusted ECT selection or calibrated latency.
+
+The subsequent [endpoint-mode live attempt](results/router-lmcache-endpoint-smoke-2026-09-12.json)
+could not reach policy dispatch: c's Chat renderer timed out after the configured
+120-second HTTP timeout. Consequently it does not establish live cache ranking
+in endpoint mode. A subsequent 20-second availability check found d's lookup
+responding 200 and c's lookup timing out. That check used one synthetic token,
+so its empty layout is not evidence that d's cache was empty.
+Local verification passed 505 Rust unit tests, 14 snapshot
+acceptance tests and 26 Python tests, including all three policies through the
+real binary with no fingerprints or routing identity headers.

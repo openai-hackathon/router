@@ -2,7 +2,9 @@
 
 更新：2026-09-12。這份分析區分直接觀測、附條件推估與仍然未知的資訊；它不是已完成實機校準的宣告。
 
-**LMCache adapter 已有可接的資料契約；完整 ECT 還缺已驗證的 engine 身分、服務配置與校準範圍，以及實際 CPU cache 還原樣本。服務時間本身現在可以開始量測，不必等新的 per-request API。** c、d 的 `/metrics` 已包含 prefill、decode、queue 與 inference histogram，可以在隔離單請求窗口用 `_sum` 的差值取得各階段時間。
+**LMCache adapter 已接入 Router；這輪依使用者指定，假設模型／serving 設定相同、endpoint 固定對應 engine，以 `lmcache.identity_mode: "endpoint"` 暫時略過身分驗證。ECT 仍缺適用範圍內的時間模型校準，以及實際 CPU cache 還原樣本。服務時間本身現在可以開始量測，不必等新的 per-request API。** c、d 的 `/metrics` 已包含 prefill、decode、queue 與 inference histogram，可以在隔離單請求窗口用 `_sum` 的差值取得各階段時間。
+
+設定方式見 [LMCache adapter](lmcache-adapter.md)。以下仍列出哪些資訊實際未知，以區分部署假設與直接觀測；epoch／fingerprint 的缺項在 endpoint 模式不再阻擋選路。lookup／health 失敗、資料過期或成本模型缺失仍會共同降級。
 
 ## 已實測的範圍
 
@@ -87,7 +89,7 @@ lookup / health timeout、health 非成功、instance 不符
 
 以上是保守的失效處理建議。exporter 可以重啟而 engine 未換，engine 也可能變更而 exporter 尚未重建；同一個 endpoint 還可能切到另一個容器。這些訊號都不能被轉成「已證明舊 engine 結束」來釋放 ledger 的未知 attempt。`event_id` 是每次操作不同的 UUID，也不能當作可排序的 telemetry sequence。
 
-沒有事件序列時，可以每次使用前重查 lookup、縮短結果 TTL、健康失敗即失效；仍然無法檢測未回報的 eviction 或保證選路到送達之間不變。若要維持原先嚴格的證據規則，這個來源應以較弱的 evidence mode 接入，缺乏 verified identity 時保留共同 least-load fallback。若另開 heuristic 實驗模式，必須在結果中清楚區分。
+沒有事件序列時，可以每次使用前重查 lookup、縮短結果 TTL、健康失敗即失效；仍然無法檢測未回報的 eviction 或保證選路到送達之間不變。原先嚴格規則保留在預設的 `verified` 模式；目前實驗使用 `endpoint` 模式，決策與 metrics 會標示模式，並讓未知 epoch 維持 null。
 
 ## 服務時間：已實測能由 histogram 差分取得
 

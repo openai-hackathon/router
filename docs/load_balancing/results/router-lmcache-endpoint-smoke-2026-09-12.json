@@ -1,0 +1,56 @@
+{
+  "started_at": "2026-09-12T04:55:29.676502+00:00",
+  "config": {
+    "lmcache": {
+      "identity_mode": "endpoint",
+      "renderer_base_url": "https://s9930703--vllm-serve-c-serve.modal.run",
+      "model": "local",
+      "fingerprint": null,
+      "workers": {
+        "https://s9930703--vllm-serve-c-serve.modal.run": {
+          "controller_url": "https://s9930703--vllm-serve-c-serve.modal.run",
+          "instance_id": "vllm-c",
+          "block_size": 16,
+          "fingerprint": null
+        },
+        "https://s9930703--vllm-serve-d-serve.modal.run": {
+          "controller_url": "https://s9930703--vllm-serve-d-serve.modal.run",
+          "instance_id": "vllm-d",
+          "block_size": 16,
+          "fingerprint": null
+        }
+      }
+    },
+    "telemetry_timeout_ms": 10000,
+    "render_timeout_ms": 10000,
+    "max_evidence_age_ms": 20000
+  },
+  "policies": {},
+  "error": "transport_error",
+  "render_attempt": {
+    "endpoint": "https://s9930703--vllm-serve-c-serve.modal.run/v1/chat/completions/render",
+    "timeout_seconds": 120,
+    "status": "transport_error"
+  },
+  "availability_checks": {
+    "https://s9930703--vllm-serve-c-serve.modal.run": {
+      "status": "transport_error",
+      "error_type": "TimeoutError",
+      "synthetic_token_count": 1,
+      "purpose": "availability only; not cache absence evidence"
+    },
+    "https://s9930703--vllm-serve-d-serve.modal.run": {
+      "status": 200,
+      "seconds": 1.316,
+      "data": {
+        "event_id": "Lookup675fa7f6-f28f-4961-ac07-a115bf309cfe",
+        "layout_info": {}
+      },
+      "identity_headers": {},
+      "synthetic_token_count": 1,
+      "purpose": "availability only; not cache absence evidence"
+    }
+  },
+  "finished_at": "2026-09-12T04:58:14.351507+00:00",
+  "outcome": "live policy requests not attempted because rendering failed; local fixture tests passed"
+}

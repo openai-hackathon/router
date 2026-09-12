@@ -72,7 +72,12 @@ The optional [LMCache adapter](lmcache-adapter.md) consumes each configured
 controller's lookup/health APIs before reservation. Native `Observed` evidence
 represents GPU-reusable blocks; `LmCacheObserved` retains CPU tier, stored prefix
 and the usable prefix cap separately. Identity/freshness and restoration-cost
-checks remain shared with the selectors. The offline suite covers both sources.
+checks remain shared with the selectors. For the current experiment, explicit
+`lmcache.identity_mode: "endpoint"` assumes equal serving configuration and fixed
+endpoint/instance bindings, so missing fingerprints/epochs no longer block
+controller prefix ranking. Freshness, health and cost checks still apply. The
+default `verified` mode retains the identity checks. The offline suite covers
+both sources and both LMCache identity modes.
 
 ## What the live deployment provides, and what ECT still needs
 
