@@ -1,5 +1,17 @@
 # vLLM Router
 
+## Changes in this fork
+
+Summary of the 20 commits from `83944c4` to `4eb672f`:
+
+- **Three KV routing policies:** Added `prefix_max` (largest reusable prefix), `least_load_kv` (fewest in-flight attempts, then prefix reuse), and `kv_batch_ect` (lowest estimated completion time), with bounded session affinity for ECT.
+- **LMCache integration:** Added a configurable adapter using actual vLLM-rendered tokens and parallel controller lookups, with verified or assumed endpoint identities. Fixed partial-prefix handling to preserve raw CPU matches while aligning reusable tokens to vLLM blocks.
+- **Completion-time prediction:** Added per-worker models combining prompt/output size, cache benefit, Router load, backend running/waiting requests, and KV usage. Retained the decomposed ECT model and its CPU restoration costs for compatibility.
+- **Shared request accounting:** Made worker selection and reservation atomic across regular HTTP policies. Unified retry and streaming lifecycle handling so response headers cannot release active reservations; interrupted attempts remain tracked until termination is confirmed.
+- **Telemetry and fallbacks:** Added shared routing snapshots, a KV telemetry bridge, controller probes, background backend-metrics polling, and decision/fallback metrics. Missing, stale, or incompatible required inputs trigger a common least-load fallback.
+- **Calibration tools:** Added per-attempt completion timing, output usage, finish reasons, cost breakdowns, and offline model fitting with validation checks.
+- **Examples and validation:** Added configuration guides, an offline routing demo, three-worker HTTP smoke tests, and recorded live vLLM/LMCache checks. Live completion-time checks used synthetic coefficients and establish integration correctness only.
+
 ## Three KV routing policies added by this fork
 
 All three policies run in the **Router** and share request tokenization, prefix evidence, the in-flight ledger, and the retry/streaming lifecycle. They differ in worker ranking. vLLM provides inference and telemetry without scheduler changes.
