@@ -74,12 +74,17 @@ struct Home {
     epoch: String,
     updated: Instant,
 }
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum SessionScope {
+    Fingerprint(String),
+    EndpointModel(String),
+}
 #[derive(Debug, Default)]
 struct State {
     workers: HashMap<String, WorkerTelemetry>,
     controller_metadata: HashMap<String, WorkerMetadata>,
     controller_observed_at: HashMap<String, Instant>,
-    sessions: HashMap<(String, String), Home>,
+    sessions: HashMap<(SessionScope, String), Home>,
     identity_mismatches: HashMap<String, String>,
 }
 
@@ -97,6 +102,22 @@ impl SharedRoutingState {
             ledger,
             state: Mutex::new(State::default()),
         }
+    }
+    fn session_key(&self, features: &RequestFeatures) -> Option<(SessionScope, String)> {
+        let session = features.session_id.clone()?;
+        let scope = if self.config.endpoint_identity() {
+            if features.fallback_reason.is_some() || features.tokens.is_none() {
+                return None;
+            }
+            let model = features.model.as_ref()?;
+            if model != &self.config.lmcache.as_ref()?.model {
+                return None;
+            }
+            SessionScope::EndpointModel(model.clone())
+        } else {
+            SessionScope::Fingerprint(features.fingerprint.clone()?)
+        };
+        Some((scope, session))
     }
     pub fn invalidate(&self, url: &str) {
         if let Some(worker) = self.state.lock().workers.get_mut(url) {
@@ -179,13 +200,9 @@ impl SharedRoutingState {
                 }
             })
             .collect();
-        let home = features
-            .fingerprint
-            .as_ref()
-            .zip(features.session_id.as_ref())
-            .and_then(|(fingerprint, session)| {
-                state.sessions.get(&(fingerprint.clone(), session.clone()))
-            })
+        let home = self
+            .session_key(features)
+            .and_then(|key| state.sessions.get(&key))
             .map(|home| SessionHomeSnapshot {
                 worker_url: home.worker_url.clone(),
                 engine_epoch: home.epoch.clone(),
@@ -218,12 +235,13 @@ impl SharedRoutingState {
                 let observation = observations.get(&worker.worker_url);
                 worker.metadata = observation.map(|o| o.metadata.clone());
                 worker.evidence = observation.map_or(PrefixEvidence::Unknown, |o| {
-                    if state.identity_mismatches.get(&worker.worker_url)
-                        == Some(&o.metadata.engine_epoch)
-                        || state
-                            .controller_metadata
-                            .get(&worker.worker_url)
-                            .is_some_and(|m| m.engine_epoch != o.metadata.engine_epoch)
+                    if !self.config.endpoint_identity()
+                        && (state.identity_mismatches.get(&worker.worker_url)
+                            == Some(&o.metadata.engine_epoch)
+                            || state
+                                .controller_metadata
+                                .get(&worker.worker_url)
+                                .is_some_and(|m| m.engine_epoch != o.metadata.engine_epoch))
                     {
                         PrefixEvidence::Stale
                     } else {
@@ -233,8 +251,9 @@ impl SharedRoutingState {
             }
         }
         let decision = snapshot.decide(ranking, features, &self.config)?;
-        metrics::counter!("router_routing_decisions_total", "policy" => ranking.name(), "fallback" => decision.fallback_reason.unwrap_or("none")).increment(1);
+        metrics::counter!("router_routing_decisions_total", "policy" => ranking.name(), "fallback" => decision.fallback_reason.unwrap_or("none"), "identity_mode" => decision.identity_mode).increment(1);
         tracing::info!(request_id = %features.request_id, policy = ranking.name(), fallback_reason = decision.fallback_reason,
+            identity_mode = decision.identity_mode,
             prompt_tokens = features.tokens.as_ref().map(Vec::len), output_limit = features.output_limit,
             candidates = %serde_json::to_string(&decision.candidates).unwrap_or_default(), chosen_worker = workers[decision.chosen_worker].url(), affinity = decision.affinity_applied, "routing decision");
         Some(decision.chosen_worker)
@@ -260,7 +279,8 @@ impl SharedRoutingState {
         headers: Option<&RequestHeaders>,
         observations: Option<&lmcache::Observations>,
     ) -> Option<Reservation> {
-        if let Some(observations) = observations {
+        let endpoint_identity = self.config.endpoint_identity();
+        if let Some(observations) = observations.filter(|_| !endpoint_identity) {
             for (url, observation) in observations {
                 let meta = &observation.metadata;
                 if !meta.engine_epoch.is_empty() {
@@ -293,36 +313,45 @@ impl SharedRoutingState {
                 }
                 None => policy.select_worker_with_headers(workers, text, headers),
             })?;
-        let epoch = observations
-            .and_then(|o| o.get(reservation.worker.url()))
-            .map(|o| o.metadata.engine_epoch.clone())
-            .filter(|epoch| !epoch.is_empty())
-            .or_else(|| {
-                self.state
-                    .lock()
-                    .workers
-                    .get(reservation.worker.url())
-                    .map(|t| t.info.engine_epoch.clone())
-            });
-        if let Some(epoch) = epoch {
+        let epoch = if endpoint_identity {
+            None
+        } else {
+            observations
+                .and_then(|o| o.get(reservation.worker.url()))
+                .map(|o| o.metadata.engine_epoch.clone())
+                .filter(|epoch| !epoch.is_empty())
+                .or_else(|| {
+                    self.state
+                        .lock()
+                        .workers
+                        .get(reservation.worker.url())
+                        .map(|t| t.info.engine_epoch.clone())
+                })
+        };
+        if let Some(epoch) = &epoch {
             reservation.set_epoch(epoch.clone());
-            if let (Some(session), Some(fingerprint)) =
-                (features.session_id.clone(), features.fingerprint.clone())
-            {
+        }
+        if endpoint_identity || epoch.is_some() {
+            if let Some(session_key) = self.session_key(features) {
+                let epoch = epoch.unwrap_or_default();
                 let weak = Arc::downgrade(self);
                 let url = reservation.worker.url().to_owned();
                 reservation.on_success(move || {
                     if let Some(shared) = weak.upgrade() {
                         let mut state = shared.state.lock();
-                        let current = state
-                            .workers
-                            .get(&url)
-                            .is_some_and(|w| w.info.engine_epoch == epoch && w.synced)
+                        let current = endpoint_identity
+                            || state
+                                .workers
+                                .get(&url)
+                                .is_some_and(|w| w.info.engine_epoch == epoch && w.synced)
                             || state
                                 .controller_metadata
                                 .get(&url)
                                 .is_some_and(|m| m.engine_epoch == epoch);
-                        if !current || state.identity_mismatches.get(&url) == Some(&epoch) {
+                        if !current
+                            || (!endpoint_identity
+                                && state.identity_mismatches.get(&url) == Some(&epoch))
+                        {
                             return;
                         }
                         state.sessions.retain(|_, home| {
@@ -340,7 +369,7 @@ impl SharedRoutingState {
                             }
                         }
                         state.sessions.insert(
-                            (fingerprint, session),
+                            session_key,
                             Home {
                                 worker_url: url,
                                 epoch,
@@ -355,6 +384,9 @@ impl SharedRoutingState {
     }
 
     pub fn validate_response_identity(&self, url: &str, headers: &http::HeaderMap) -> bool {
+        if self.config.endpoint_identity() {
+            return true;
+        }
         let state = self.state.lock();
         let identity = state
             .workers

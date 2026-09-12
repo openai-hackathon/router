@@ -11,6 +11,24 @@ use std::{
     time::Instant,
 };
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentityMode {
+    #[default]
+    Verified,
+    /// Experiment assumption: equal serving configuration and fixed endpoints.
+    Endpoint,
+}
+
+impl IdentityMode {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Endpoint => "endpoint",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LmCacheWorker {
@@ -25,6 +43,8 @@ pub struct LmCacheWorker {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LmCacheConfig {
+    #[serde(default)]
+    pub identity_mode: IdentityMode,
     pub renderer_base_url: String,
     pub model: String,
     /// Operator-supplied renderer serving fingerprint, independently checked
@@ -74,7 +94,7 @@ impl LmCacheConfig {
         Ok(())
     }
 
-    fn worker(&self, url: &str) -> Option<&LmCacheWorker> {
+    pub(super) fn worker(&self, url: &str) -> Option<&LmCacheWorker> {
         self.workers
             .iter()
             .find(|(key, _)| key.trim_end_matches('/') == url.trim_end_matches('/'))
@@ -135,10 +155,9 @@ pub async fn build_features(
                 if !rendered.token_ids.is_empty() {
                     features.tokens = Some(rendered.token_ids);
                     features.fingerprint = config.fingerprint.clone();
-                    features.fallback_reason = config
-                        .fingerprint
-                        .is_none()
-                        .then_some("missing_serving_fingerprint");
+                    features.fallback_reason = (config.identity_mode == IdentityMode::Verified
+                        && config.fingerprint.is_none())
+                    .then_some("missing_serving_fingerprint");
                 }
             }
         }
@@ -339,6 +358,7 @@ mod tests {
     async fn observations(layout: Value, health: Value, identity: bool) -> Observation {
         let (url, task) = controller(layout, health, identity).await;
         let config = LmCacheConfig {
+            identity_mode: IdentityMode::Verified,
             renderer_base_url: url.clone(),
             model: "local".into(),
             fingerprint: Some("fp".into()),

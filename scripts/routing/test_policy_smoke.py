@@ -98,9 +98,15 @@ class FixtureWorker:
         async def chat(request: Request):
             body = await request.json()
             headers = {
-                "x-routing-worker-id": self.worker_id,
-                "x-routing-engine-epoch": self.epoch,
+                "x-smoke-worker-id": self.worker_id,
             }
+            if getattr(self, "identity", True):
+                headers.update(
+                    {
+                        "x-routing-worker-id": self.worker_id,
+                        "x-routing-engine-epoch": self.epoch,
+                    }
+                )
             if body.get("smoke_retry"):
                 self.retries += 1
                 if self.retries == 1:
@@ -207,16 +213,21 @@ class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
                 },
             }
             if source == "lmcache":
+                identity_mode = getattr(self, "identity_mode", "verified")
+                fingerprint = "smoke-fixture" if identity_mode == "verified" else None
+                for node in self.nodes:
+                    node.identity = identity_mode == "verified"
                 config["lmcache"] = {
+                    "identity_mode": identity_mode,
                     "renderer_base_url": self.urls[0],
                     "model": "local",
-                    "fingerprint": "smoke-fixture",
+                    "fingerprint": fingerprint,
                     "workers": {
                         url: {
                             "controller_url": url,
                             "instance_id": f"g{i}",
                             "block_size": 2,
-                            "fingerprint": "smoke-fixture",
+                            "fingerprint": fingerprint,
                         }
                         for i, url in enumerate(self.urls)
                     },
@@ -289,7 +300,7 @@ class PolicySmokeTest(unittest.IsolatedAsyncioTestCase):
                     ) as held:
                         self.assertEqual(held.status_code, 200)
                         self.assertEqual(
-                            held.headers["x-routing-worker-id"], f"g{first_worker}"
+                            held.headers["x-smoke-worker-id"], f"g{first_worker}"
                         )
                         # Headers and the first chunk must not release the reservation.
                         chunks = held.aiter_bytes()
@@ -451,6 +462,10 @@ class LmCachePolicySmokeTest(PolicySmokeTest):
 
     async def exercise(self, policy, first_worker, while_held, source="lmcache"):
         await super().exercise(policy, first_worker, while_held, source)
+
+
+class LmCacheEndpointSmokeTest(LmCachePolicySmokeTest):
+    identity_mode = "endpoint"
 
 
 if __name__ == "__main__":

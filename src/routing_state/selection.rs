@@ -69,6 +69,7 @@ pub struct CandidateSnapshot {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RoutingDecision {
+    pub identity_mode: &'static str,
     pub chosen_worker: usize,
     pub fallback_reason: Option<&'static str>,
     pub affinity_applied: bool,
@@ -82,11 +83,12 @@ impl SelectionSnapshot {
         features: &RequestFeatures,
         config: &RoutingConfig,
     ) -> Option<RoutingDecision> {
+        let endpoint_identity = config.endpoint_identity();
         let mut ordered: Vec<_> = self.workers.iter().filter(|w| w.available).collect();
         ordered.sort_by(|a, b| a.worker_url.cmp(&b.worker_url));
         let mut fallback = features.fallback_reason;
         if features.tokens.as_ref().is_none_or(Vec::is_empty)
-            || features.fingerprint.as_ref().is_none_or(String::is_empty)
+            || (!endpoint_identity && features.fingerprint.as_ref().is_none_or(String::is_empty))
         {
             fallback.get_or_insert("missing_request_features");
         }
@@ -105,7 +107,8 @@ impl SelectionSnapshot {
             if let Some(meta) = metadata {
                 if (!meta.model.is_empty()
                     && features.model.as_deref().is_some_and(|m| m != meta.model))
-                    || (!meta.fingerprint.is_empty()
+                    || (!endpoint_identity
+                        && !meta.fingerprint.is_empty()
                         && features
                             .fingerprint
                             .as_deref()
@@ -113,7 +116,9 @@ impl SelectionSnapshot {
                 {
                     continue;
                 }
-                if meta.valid() && !identities.insert(&meta.worker_id) {
+                if (meta.valid() || (endpoint_identity && !meta.worker_id.is_empty()))
+                    && !identities.insert(&meta.worker_id)
+                {
                     fallback.get_or_insert("ambiguous_worker_identity");
                 }
             }
@@ -134,6 +139,7 @@ impl SelectionSnapshot {
                 } => {
                     let valid = metadata.is_some_and(|meta| {
                         meta.valid()
+                            && features.fingerprint.as_deref() == Some(meta.fingerprint.as_str())
                             && meta.engine_epoch == *engine_epoch
                             && tokens.is_multiple_of(meta.block_size)
                             && features.tokens.as_ref().is_some_and(|t| *tokens <= t.len())
@@ -158,9 +164,21 @@ impl SelectionSnapshot {
                     ..
                 } => {
                     let valid = metadata.is_some_and(|meta| {
-                        meta.valid()
+                        let identity_valid = if endpoint_identity {
+                            config.lmcache.as_ref().is_some_and(|c| {
+                                meta.model == c.model
+                                    && c.worker(&worker.worker_url).is_some_and(|w| {
+                                        w.instance_id == meta.worker_id
+                                            && w.block_size == meta.block_size
+                                            && meta.block_size > 0
+                                    })
+                            })
+                        } else {
+                            meta.valid()
+                                && engine_epoch.as_deref() == Some(meta.engine_epoch.as_str())
+                        };
+                        identity_valid
                             && instance_id == &meta.worker_id
-                            && engine_epoch.as_deref() == Some(meta.engine_epoch.as_str())
                             && location == "LocalCPUBackend"
                             && tokens.is_multiple_of(meta.block_size)
                             && tokens <= cached_tokens
@@ -170,7 +188,7 @@ impl SelectionSnapshot {
                                 .is_some_and(|t| *tokens < t.len() && *cached_tokens <= t.len())
                     });
                     if !valid {
-                        fallback.get_or_insert(if engine_epoch.is_none() {
+                        fallback.get_or_insert(if !endpoint_identity && engine_epoch.is_none() {
                             "unverified_lmcache_identity"
                         } else {
                             "invalid_lmcache_evidence"
@@ -209,7 +227,13 @@ impl SelectionSnapshot {
                     .ok_or("missing_cost_model")
                     .and_then(|model| {
                         model.estimate(
-                            &meta.fingerprint,
+                            // Endpoint mode assigns each cost model by configured
+                            // instance; no serving fingerprint is claimed verified.
+                            if endpoint_identity {
+                                &model.fingerprint
+                            } else {
+                                &meta.fingerprint
+                            },
                             features.tokens.as_ref().unwrap().len(),
                             candidate.reusable_tokens,
                             features.output_limit,
@@ -224,11 +248,20 @@ impl SelectionSnapshot {
                         } = &candidate.evidence
                         {
                             if *cached_tokens > 0 {
-                                return config
+                                let restore = config
                                     .restore_models
                                     .get(&meta.worker_id)
-                                    .ok_or("missing_restore_model")?
-                                    .apply(&meta.fingerprint, location, *cached_tokens, estimate);
+                                    .ok_or("missing_restore_model")?;
+                                return restore.apply(
+                                    if endpoint_identity {
+                                        &restore.fingerprint
+                                    } else {
+                                        &meta.fingerprint
+                                    },
+                                    location,
+                                    *cached_tokens,
+                                    estimate,
+                                );
                             }
                         }
                         Ok(estimate)
@@ -273,7 +306,7 @@ impl SelectionSnapshot {
                     // Evaluate the small allowance separately: 1.015 * 2000
                     // rounds below 2030 and would reject an exact 2040 ms home.
                     let affinity_limit = best_ect + 0.015 * best_ect + 10.0;
-                    if meta.engine_epoch == home.engine_epoch
+                    if (endpoint_identity || meta.engine_epoch == home.engine_epoch)
                         && candidate.reusable_tokens
                             >= best.reusable_tokens.saturating_add(meta.block_size)
                         && candidate.ect_ms.unwrap() <= affinity_limit
@@ -285,6 +318,7 @@ impl SelectionSnapshot {
             }
         }
         Some(RoutingDecision {
+            identity_mode: config.identity_mode_name(),
             chosen_worker: chosen,
             fallback_reason: fallback,
             affinity_applied: affinity,

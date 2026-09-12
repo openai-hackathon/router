@@ -348,6 +348,134 @@ fn session_home_requires_success_epoch_and_bounded_cost() {
         .for_each(|h| h.epoch = "wrong".into());
     assert_eq!(state.select(&workers, Ranking::KvBatchEct, &f), Some(1));
 }
+
+#[test]
+fn endpoint_sessions_require_success_and_do_not_invent_an_attempt_epoch() {
+    let workers = workers();
+    let configured: serde_json::Map<String, serde_json::Value> = workers
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            (
+                w.url().into(),
+                serde_json::json!({
+                    "controller_url": w.url(),
+                    "instance_id": format!("g{i}"),
+                    "block_size": 2,
+                }),
+            )
+        })
+        .collect();
+    let mut config = config::RoutingConfig {
+        lmcache: Some(
+            serde_json::from_value(serde_json::json!({
+                "identity_mode": "endpoint",
+                "renderer_base_url": "http://renderer",
+                "model": "local",
+                "workers": configured,
+            }))
+            .unwrap(),
+        ),
+        ..Default::default()
+    };
+    let observations: lmcache::Observations = workers
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            config.cost_models.insert(
+                format!("g{i}"),
+                cost::CostModel {
+                    fingerprint: "assigned-test-model".into(),
+                    calibration_version: "synthetic-only".into(),
+                    prompt_range: [1, 100],
+                    output_range: [1, 100],
+                    concurrency_range: [0, 100],
+                    output_prior: 10,
+                    prefill: [[101.0, 100.0, 200.0][i], 0.0, 0.0],
+                    decode: [0.0; 3],
+                    beta: 0.0,
+                    queue_ms: 0.0,
+                },
+            );
+            config.restore_models.insert(
+                format!("g{i}"),
+                cost::RestoreCostModel {
+                    fingerprint: "assigned-test-restore".into(),
+                    calibration_version: "synthetic-only".into(),
+                    location: "LocalCPUBackend".into(),
+                    token_range: [1, 100],
+                    fixed_ms: 0.0,
+                    per_token_ms: 0.0,
+                },
+            );
+            (
+                w.url().into(),
+                lmcache::Observation {
+                    metadata: WorkerMetadata {
+                        worker_id: format!("g{i}"),
+                        model: "local".into(),
+                        fingerprint: String::new(),
+                        engine_epoch: String::new(),
+                        block_size: 2,
+                    },
+                    evidence: PrefixEvidence::LmCacheObserved {
+                        tokens: 6 - 2 * i,
+                        cached_tokens: 6 - 2 * i,
+                        instance_id: format!("g{i}"),
+                        location: "LocalCPUBackend".into(),
+                        engine_epoch: None,
+                        age_ms: 0,
+                    },
+                    started: Instant::now(),
+                },
+            )
+        })
+        .collect();
+    let state = Arc::new(SharedRoutingState::new(
+        config,
+        Arc::new(DispatchLedger::default()),
+    ));
+    let mut f = features();
+    f.fingerprint = None;
+    f.session_id = Some("endpoint-session".into());
+    for success in [false, true] {
+        let mut request = state
+            .reserve_with_observations(
+                &workers,
+                Arc::new(ObservedPolicy(Ranking::PrefixMax)),
+                &f,
+                None,
+                None,
+                Some(&observations),
+            )
+            .unwrap();
+        assert!(state.snapshot(&workers, &f).home.is_none());
+        request.dispatched();
+        request.finish(success);
+    }
+    let home = state.snapshot(&workers, &f).home.unwrap();
+    assert_eq!(home.worker_url, workers[0].url());
+    assert!(home.engine_epoch.is_empty());
+    assert!(state.validate_response_identity(workers[0].url(), &http::HeaderMap::new()));
+    let mut request = state
+        .reserve_with_observations(
+            &workers,
+            Arc::new(ObservedPolicy(Ranking::KvBatchEct)),
+            &f,
+            None,
+            None,
+            Some(&observations),
+        )
+        .unwrap();
+    assert_eq!(request.worker.url(), workers[0].url()); // bounded endpoint affinity
+    request.dispatched();
+    drop(request);
+    state
+        .ledger
+        .observe_epoch(workers[0].url(), "unrelated-new-epoch");
+    assert_eq!(state.ledger.unknown_count(workers[0].url()), 1);
+    assert_eq!(workers[0].load(), 1);
+}
 #[tokio::test]
 async fn feature_builder_does_not_render_responses_as_chat() {
     let f = features::build(

@@ -60,6 +60,156 @@ fn controller_evidence(snapshot: &mut SelectionSnapshot) {
     }
 }
 
+fn endpoint_scenario() -> (SelectionSnapshot, RequestFeatures, RoutingConfig) {
+    let (mut snapshot, mut features, mut config) = scenario();
+    controller_evidence(&mut snapshot);
+    features.fingerprint = None;
+    let mut workers = serde_json::Map::new();
+    for worker in &mut snapshot.workers {
+        let meta = worker.metadata.as_mut().unwrap();
+        workers.insert(worker.worker_url.clone(), serde_json::json!({
+            "controller_url":worker.worker_url, "instance_id":meta.worker_id, "block_size":meta.block_size
+        }));
+        meta.fingerprint.clear();
+        meta.engine_epoch.clear();
+        if let PrefixEvidence::LmCacheObserved { engine_epoch, .. } = &mut worker.evidence {
+            *engine_epoch = None;
+        }
+        config.restore_models.insert(
+            meta.worker_id.clone(),
+            vllm_router_rs::routing_state::cost::RestoreCostModel {
+                fingerprint: "assigned-by-endpoint-test-only".into(),
+                calibration_version: "synthetic-restore-only".into(),
+                location: "LocalCPUBackend".into(),
+                token_range: [1, 8192],
+                fixed_ms: 0.0,
+                per_token_ms: 0.0,
+            },
+        );
+    }
+    config.lmcache = Some(
+        serde_json::from_value(serde_json::json!({
+            "identity_mode": "endpoint",
+            "renderer_base_url": "http://renderer",
+            "model": features.model,
+            "workers": workers,
+        }))
+        .unwrap(),
+    );
+    config.lmcache.as_ref().unwrap().validate().unwrap();
+    (snapshot, features, config)
+}
+
+#[test]
+fn endpoint_identity_uses_configured_bindings_without_fabricating_verification() {
+    let (snapshot, features, config) = endpoint_scenario();
+    for (ranking, chosen) in RANKINGS.into_iter().zip([0, 2, 1]) {
+        let result = snapshot.decide(ranking, &features, &config).unwrap();
+        assert_eq!(result.chosen_worker, chosen);
+        assert_eq!(result.identity_mode, "endpoint");
+        assert_eq!(result.fallback_reason, None);
+        assert!(result.candidates.iter().all(|c| matches!(
+            c.evidence,
+            PrefixEvidence::LmCacheObserved {
+                engine_epoch: None,
+                ..
+            }
+        )));
+    }
+    let mut strict = config.clone();
+    strict.lmcache.as_mut().unwrap().identity_mode =
+        vllm_router_rs::routing_state::lmcache::IdentityMode::Verified;
+    assert!(snapshot
+        .decide(Ranking::PrefixMax, &features, &strict)
+        .unwrap()
+        .fallback_reason
+        .is_some());
+    let mut serialized = serde_json::to_value(&config).unwrap();
+    serialized["lmcache"]
+        .as_object_mut()
+        .unwrap()
+        .remove("identity_mode");
+    let default: RoutingConfig = serde_json::from_value(serialized.clone()).unwrap();
+    assert_eq!(default.identity_mode_name(), "verified");
+    serialized["lmcache"]["identity_mode"] = "endpont".into();
+    assert!(serde_json::from_value::<RoutingConfig>(serialized).is_err());
+    let mut unmapped = config.clone();
+    unmapped
+        .lmcache
+        .as_mut()
+        .unwrap()
+        .workers
+        .remove(&snapshot.workers[0].worker_url);
+    let result = snapshot
+        .decide(Ranking::PrefixMax, &features, &unmapped)
+        .unwrap();
+    assert_eq!(result.fallback_reason, Some("invalid_lmcache_evidence"));
+    assert_eq!(result.candidates.len(), 3);
+}
+
+#[test]
+fn endpoint_mode_keeps_evidence_and_cost_fallback_and_bounded_affinity() {
+    let (mut snapshot, mut features, mut config) = endpoint_scenario();
+    let original = snapshot.workers[2].evidence.clone();
+    for (evidence, reason) in [
+        (PrefixEvidence::Unknown, "unknown_kv"),
+        (PrefixEvidence::Stale, "stale_kv"),
+    ] {
+        snapshot.workers[2].evidence = evidence;
+        for ranking in RANKINGS {
+            assert_eq!(
+                snapshot
+                    .decide(ranking, &features, &config)
+                    .unwrap()
+                    .fallback_reason,
+                Some(reason)
+            );
+        }
+    }
+    snapshot.workers[2].evidence = original;
+    let id = snapshot.workers[0]
+        .metadata
+        .as_ref()
+        .unwrap()
+        .worker_id
+        .clone();
+    let restore = config.restore_models.remove(&id).unwrap();
+    assert_eq!(
+        snapshot
+            .decide(Ranking::KvBatchEct, &features, &config)
+            .unwrap()
+            .fallback_reason,
+        Some("missing_restore_model")
+    );
+    config.restore_models.insert(id, restore);
+    for (worker, score) in snapshot.workers.iter().zip([111.5, 100.0, 500.0]) {
+        let model = config
+            .cost_models
+            .get_mut(&worker.metadata.as_ref().unwrap().worker_id)
+            .unwrap();
+        model.prefill = [0.0; 3];
+        model.decode = [score, 0.0, 0.0];
+        model.beta = 0.0;
+    }
+    features.session_id = Some("endpoint-session".into());
+    snapshot.home = Some(SessionHomeSnapshot {
+        worker_url: snapshot.workers[0].worker_url.clone(),
+        engine_epoch: String::new(),
+        age_ms: 0,
+    });
+    let result = snapshot
+        .decide(Ranking::KvBatchEct, &features, &config)
+        .unwrap();
+    assert!(result.affinity_applied);
+    assert_eq!(result.chosen_worker, 0);
+    snapshot.home.as_mut().unwrap().age_ms = config.session_ttl_secs * 1000;
+    let result = snapshot
+        .decide(Ranking::KvBatchEct, &features, &config)
+        .unwrap();
+    assert!(!result.affinity_applied);
+    assert_eq!(result.chosen_worker, 1);
+}
+
 #[test]
 fn controller_cache_requires_identity_and_separate_restore_cost() {
     use vllm_router_rs::routing_state::cost::RestoreCostModel;

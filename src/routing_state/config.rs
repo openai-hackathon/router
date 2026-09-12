@@ -44,6 +44,18 @@ impl Default for RoutingConfig {
 }
 
 impl RoutingConfig {
+    pub fn endpoint_identity(&self) -> bool {
+        self.lmcache
+            .as_ref()
+            .is_some_and(|c| c.identity_mode == super::lmcache::IdentityMode::Endpoint)
+    }
+
+    pub fn identity_mode_name(&self) -> &'static str {
+        self.lmcache
+            .as_ref()
+            .map_or("native", |c| c.identity_mode.name())
+    }
+
     pub fn load(path: Option<&str>) -> Result<Self, String> {
         let config: Self = match path {
             Some(path) => serde_json::from_slice(
